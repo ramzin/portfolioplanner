@@ -652,4 +652,43 @@ class SimulationEngineTest {
         assertEquals(BigDecimal("88000.00"), m1.equityBalance)
         assertEquals(BigDecimal("22000.00"), m1.cashBalance)
     }
+
+    @Test
+    fun `test explanation logs generation`() {
+        val allocation = Allocation(
+            equityPercentage = BigDecimal("40.0"),
+            bondPercentage = BigDecimal("30.0"),
+            cashPercentage = BigDecimal("30.0"),
+            equityYieldPercent = BigDecimal("6.0"),
+            bondYieldPercent = BigDecimal("4.0"),
+            cashYieldPercent = BigDecimal("3.0")
+        )
+
+        val request = SimulationRequest(
+            currentAge = 34,
+            retirementAge = 35,
+            initialNetWorth = BigDecimal("100000.00"),
+            monthlySalary = BigDecimal("5000.00"),
+            monthlyExpenses = BigDecimal("3000.00"),
+            allocation = allocation,
+            dcaMonthlyAmount = BigDecimal("5000.00"),
+            targetEquityRatioPercent = BigDecimal("80.00"),
+            postTargetStrategy = PostTargetStrategy.PROPORTIONAL_REBALANCE
+        )
+
+        val response = engine.simulate(request)
+        val m0 = response.timeline[0]
+        assertEquals(1, m0.equityEvents.size)
+        assertEquals("Initial Equity Balance (40.0% of €100,000.00)", m0.equityEvents[0].type)
+        assertEquals(1, m0.bondEvents.size)
+        assertEquals("Initial Bond Balance (30.0% of €100,000.00)", m0.bondEvents[0].type)
+        assertEquals(1, m0.cashEvents.size)
+        assertEquals("Initial Cash Balance (30.0% of €100,000.00)", m0.cashEvents[0].type)
+        assertEquals(1, m0.events.size)
+        assertEquals("Simulation initialized at Age 34 with Net Worth of €100,000.00.", m0.events[0])
+
+        val m1 = response.timeline[1]
+        kotlin.test.assertTrue(m1.equityEvents.any { it.type.contains("yield", ignoreCase = true) || it.type.contains("DCA", ignoreCase = true) })
+        kotlin.test.assertTrue(m1.cashEvents.any { it.type.contains("interest", ignoreCase = true) || it.type.contains("savings", ignoreCase = true) })
+    }
 }

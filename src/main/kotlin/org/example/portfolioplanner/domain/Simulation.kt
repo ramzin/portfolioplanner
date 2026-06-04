@@ -51,6 +51,11 @@ data class SimulationRequest(
     val postTargetStrategy: PostTargetStrategy = PostTargetStrategy.HOLD_CASH
 )
 
+data class LedgerEvent(
+    val amount: BigDecimal,
+    val type: String
+)
+
 data class TimelinePoint(
     val month: Int,
     val date: LocalDate,
@@ -60,7 +65,11 @@ data class TimelinePoint(
     val equityBalance: BigDecimal,
     val netWorth: BigDecimal,
     val equityRatioPercent: BigDecimal,
-    val taxPaidThisYear: BigDecimal = BigDecimal.ZERO
+    val taxPaidThisYear: BigDecimal = BigDecimal.ZERO,
+    val equityEvents: List<LedgerEvent> = emptyList(),
+    val bondEvents: List<LedgerEvent> = emptyList(),
+    val cashEvents: List<LedgerEvent> = emptyList(),
+    val events: List<String> = emptyList()
 )
 
 data class SimulationResponse(

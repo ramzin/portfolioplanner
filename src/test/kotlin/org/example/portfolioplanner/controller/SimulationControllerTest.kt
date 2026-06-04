@@ -44,6 +44,8 @@ class SimulationControllerTest {
             jsonPath("$.monthsToTarget") { value(-1) }
             jsonPath("$.timeline[0].month") { value(0) }
             jsonPath("$.timeline[0].netWorth") { value(100000.00) }
+            jsonPath("$.timeline[0].equityEvents") { exists() }
+            jsonPath("$.timeline[0].events") { exists() }
             jsonPath("$.timeline[12].month") { value(12) }
             jsonPath("$.timeline[12].netWorth") { value(124000.00) }
             jsonPath("$.timeline[12].equityRatioPercent") { value(40.32) }

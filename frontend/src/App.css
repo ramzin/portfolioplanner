@@ -510,3 +510,32 @@
 .apply-rec-btn:active {
   transform: translateY(-0.5px);
 }
+
+/* Calculation Trace Log Styles */
+.log-card {
+  margin-top: 24px;
+}
+
+.log-item-card {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+
+.log-item-card:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+  transform: translateY(-1px);
+}
+
+.log-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}

@@ -64,8 +64,17 @@ class DefaultSimulationEngine : SimulationEngine {
         var cashDepletionAlerted = false
         var bondLiquidationAlerted = false
 
+        val formatUS = java.util.Locale.US
+        fun formatMoney(amount: BigDecimal): String = "€" + String.format(formatUS, "%,.2f", amount.setScale(2, RoundingMode.HALF_UP))
+
         // Month 0
-        timeline.add(createTimelinePoint(0, startDate, request.currentAge.toDouble(), equity, bond, cash, taxPaidThisYear))
+        val m0NetWorth = equity.add(bond).add(cash)
+        val m0EqEvents = listOf(LedgerEvent(equity, "Initial Equity Balance (${alloc.equityPercentage}% of ${formatMoney(m0NetWorth)})"))
+        val m0BondEvents = listOf(LedgerEvent(bond, "Initial Bond Balance (${alloc.bondPercentage}% of ${formatMoney(m0NetWorth)})"))
+        val m0CashEvents = listOf(LedgerEvent(cash, "Initial Cash Balance (${alloc.cashPercentage}% of ${formatMoney(m0NetWorth)})"))
+        val m0Events = listOf("Simulation initialized at Age ${request.currentAge} with Net Worth of ${formatMoney(m0NetWorth)}.")
+
+        timeline.add(createTimelinePoint(0, startDate, request.currentAge.toDouble(), equity, bond, cash, taxPaidThisYear, m0EqEvents, m0BondEvents, m0CashEvents, m0Events))
 
         var currentDate = startDate
 
@@ -73,6 +82,11 @@ class DefaultSimulationEngine : SimulationEngine {
         for (m in 1..totalMonths) {
             val date = startDate.plusMonths(m.toLong())
             val age = request.currentAge + (m / 12.0)
+
+            val eqEvents = ArrayList<LedgerEvent>()
+            val bondEvents = ArrayList<LedgerEvent>()
+            val cashEvents = ArrayList<LedgerEvent>()
+            val mEvents = ArrayList<String>()
 
             // Calendar year reset and Vorabpauschale calculation in January
             if (date.year > currentDate.year) {
@@ -96,6 +110,13 @@ class DefaultSimulationEngine : SimulationEngine {
                 taxPaidThisYear = taxPaidThisYear.add(vorabTax)
                 cash = cash.subtract(vorabTax)
 
+                if (vorabTax.compareTo(BigDecimal.ZERO) > 0) {
+                    cashEvents.add(LedgerEvent(vorabTax.negate(), "Deducted Equity Vorabpauschale tax"))
+                    mEvents.add("Year-End Tax Reset: Sparerpauschbetrag allowance of ${formatMoney(request.sparerpauschbetrag)} reset. Paid Vorabpauschale tax of ${formatMoney(vorabTax)} from Cash.")
+                } else {
+                    mEvents.add("Year-End Tax Reset: Sparerpauschbetrag allowance of ${formatMoney(request.sparerpauschbetrag)} reset. No Vorabpauschale tax was due.")
+                }
+
                 // Reset tracking for the new year
                 equityStartOfYear = equity
                 monthsHeldThisYear = 0
@@ -109,6 +130,9 @@ class DefaultSimulationEngine : SimulationEngine {
             val cashGrowth = cash.multiply(cashMonthlyYield)
 
             equity = equity.add(eqGrowth)
+            if (eqGrowth.compareTo(BigDecimal.ZERO) > 0) {
+                eqEvents.add(LedgerEvent(eqGrowth, "Earned compound yield (${alloc.equityYieldPercent}% p.a.)"))
+            }
 
             // Tax on cash interest
             val cashTax = if (cashGrowth.compareTo(BigDecimal.ZERO) > 0) {
@@ -120,6 +144,13 @@ class DefaultSimulationEngine : SimulationEngine {
                 BigDecimal.ZERO
             }
             taxPaidThisYear = taxPaidThisYear.add(cashTax)
+
+            if (cashGrowth.compareTo(BigDecimal.ZERO) > 0) {
+                cashEvents.add(LedgerEvent(cashGrowth, "Earned cash interest (${alloc.cashYieldPercent}% p.a.)"))
+                if (cashTax.compareTo(BigDecimal.ZERO) > 0) {
+                    cashEvents.add(LedgerEvent(cashTax.negate(), "Paid Abgeltungsteuer on cash interest"))
+                }
+            }
 
             // Bond Quarterly Maturity & Coupon (every 3 months)
             var bondQuarterlyCashInflow = BigDecimal.ZERO
@@ -147,12 +178,18 @@ class DefaultSimulationEngine : SimulationEngine {
                     val excessCoupon = coupon.subtract(w)
                     bond = bond.add(excessCoupon) // Reinvest excess coupon
                     bondQuarterlyCashInflow = w.subtract(couponTax) // Cash gets withdrawal minus tax
+
+                    bondEvents.add(LedgerEvent(excessCoupon, "Reinvested excess quarterly coupon"))
+                    cashEvents.add(LedgerEvent(bondQuarterlyCashInflow, "Received bond coupon withdrawal"))
                 } else {
                     // Case B: Withdrawal goal is greater than or equal to the coupon payment
                     val remainder = w.subtract(coupon)
                     val withdrawalFromMatured = remainder.min(matured)
                     bond = bond.subtract(withdrawalFromMatured) // Withdrawal reduces bond balance
                     bondQuarterlyCashInflow = coupon.add(withdrawalFromMatured).subtract(couponTax)
+
+                    bondEvents.add(LedgerEvent(withdrawalFromMatured.negate(), "Liquidated principal for quarterly withdrawal"))
+                    cashEvents.add(LedgerEvent(bondQuarterlyCashInflow, "Received bond coupon and matured principal"))
                 }
             }
 
@@ -166,10 +203,12 @@ class DefaultSimulationEngine : SimulationEngine {
                 when (request.postTargetStrategy) {
                     PostTargetStrategy.HOLD_CASH -> {
                         cash = cash.add(savings)
+                        cashEvents.add(LedgerEvent(savings, "Received monthly savings (Post-Target Strategy: Hold Cash)"))
                     }
                     PostTargetStrategy.ALL_EQUITY -> {
                         equity = equity.add(savings)
                         yearlyDcaInvested = yearlyDcaInvested.add(savings)
+                        eqEvents.add(LedgerEvent(savings, "Received monthly savings (Post-Target Strategy: All Equity)"))
                     }
                     PostTargetStrategy.PROPORTIONAL_REBALANCE -> {
                         val targetRatio = request.targetEquityRatioPercent.divide(hundred, 8, RoundingMode.HALF_UP)
@@ -178,11 +217,15 @@ class DefaultSimulationEngine : SimulationEngine {
                         cash = cash.add(cashShare)
                         equity = equity.add(eqShare)
                         yearlyDcaInvested = yearlyDcaInvested.add(eqShare)
+
+                        eqEvents.add(LedgerEvent(eqShare, "Received monthly savings (Post-Target Strategy: Proportional Rebalance)"))
+                        cashEvents.add(LedgerEvent(cashShare, "Received monthly savings (Post-Target Strategy: Proportional Rebalance)"))
                     }
                 }
             } else {
                 // Pre-target: Savings go to cash
                 cash = cash.add(cashGrowth).subtract(cashTax).add(bondQuarterlyCashInflow).add(savings)
+                cashEvents.add(LedgerEvent(savings, "Received monthly savings"))
             }
 
             // Monthly DCA Transfer & hierarchy (Cash -> Bonds -> Equity)
@@ -200,6 +243,9 @@ class DefaultSimulationEngine : SimulationEngine {
                     cash = cash.subtract(dca)
                     equity = equity.add(dca)
                     actualDca = dca
+
+                    cashEvents.add(LedgerEvent(dca.negate(), "Deducted programmatic DCA transition to Equity"))
+                    eqEvents.add(LedgerEvent(dca, "Received programmatic DCA transition"))
                 } else {
                     val cashDrawn = cash
                     cash = BigDecimal.ZERO
@@ -209,6 +255,7 @@ class DefaultSimulationEngine : SimulationEngine {
                         alerts.add(SimulationAlert(m, AlertType.CASH_DEPLETION, "Cash depleted at Month $m"))
                         cashDepletionAlerted = true
                     }
+                    mEvents.add("DCA Step-down Event: Cash reserves depleted. DCA transfer of ${formatMoney(dca)} funded via bond liquidations.")
 
                     val bondLiquidated = remainingNeeded.min(bond)
                     if (bondLiquidated.compareTo(BigDecimal.ZERO) > 0) {
@@ -216,11 +263,15 @@ class DefaultSimulationEngine : SimulationEngine {
                             alerts.add(SimulationAlert(m, AlertType.BOND_LIQUIDATION, "Bond liquidation started at Month $m"))
                             bondLiquidationAlerted = true
                         }
+                        bondEvents.add(LedgerEvent(bondLiquidated.negate(), "Liquidated principal to support DCA transition"))
                     }
 
                     bond = bond.subtract(bondLiquidated)
                     equity = equity.add(cashDrawn).add(bondLiquidated)
                     actualDca = cashDrawn.add(bondLiquidated)
+
+                    cashEvents.add(LedgerEvent(cashDrawn.negate(), "Cash depleted transferring remaining for DCA"))
+                    eqEvents.add(LedgerEvent(actualDca, "Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})"))
                 }
             }
             yearlyDcaInvested = yearlyDcaInvested.add(actualDca)
@@ -236,9 +287,10 @@ class DefaultSimulationEngine : SimulationEngine {
             if (!targetReached && currentRatio.compareTo(request.targetEquityRatioPercent) >= 0) {
                 targetReached = true
                 monthsToTarget = m
+                mEvents.add("Target Equity Ratio Reached: Equity ratio is ${currentRatio.setScale(2, RoundingMode.HALF_UP)}% (Target: ${request.targetEquityRatioPercent.setScale(2, RoundingMode.HALF_UP)}%). Programmatic bond withdrawals stopped.")
             }
 
-            timeline.add(createTimelinePoint(m, date, age, equity, bond, cash, taxPaidThisYear))
+            timeline.add(createTimelinePoint(m, date, age, equity, bond, cash, taxPaidThisYear, eqEvents, bondEvents, cashEvents, mEvents))
         }
 
         return SimulationResponse(
@@ -255,7 +307,11 @@ class DefaultSimulationEngine : SimulationEngine {
         equity: BigDecimal,
         bond: BigDecimal,
         cash: BigDecimal,
-        taxPaidThisYear: BigDecimal
+        taxPaidThisYear: BigDecimal,
+        equityEvents: List<LedgerEvent> = emptyList(),
+        bondEvents: List<LedgerEvent> = emptyList(),
+        cashEvents: List<LedgerEvent> = emptyList(),
+        events: List<String> = emptyList()
     ): TimelinePoint {
         val netWorth = equity.add(bond).add(cash)
         val equityRatio = if (netWorth.compareTo(BigDecimal.ZERO) == 0) {
@@ -273,7 +329,11 @@ class DefaultSimulationEngine : SimulationEngine {
             cashBalance = cash.setScale(2, RoundingMode.HALF_UP),
             netWorth = netWorth.setScale(2, RoundingMode.HALF_UP),
             equityRatioPercent = equityRatio.setScale(2, RoundingMode.HALF_UP),
-            taxPaidThisYear = taxPaidThisYear.setScale(2, RoundingMode.HALF_UP)
+            taxPaidThisYear = taxPaidThisYear.setScale(2, RoundingMode.HALF_UP),
+            equityEvents = equityEvents,
+            bondEvents = bondEvents,
+            cashEvents = cashEvents,
+            events = events
         )
     }
 }

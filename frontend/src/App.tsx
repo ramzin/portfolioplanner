@@ -1,8 +1,13 @@
 import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine } from 'recharts';
-import { TrendingUp, Award, DollarSign, AlertTriangle, Plus, Trash2 } from 'lucide-react';
+import { TrendingUp, Award, DollarSign, AlertTriangle, Plus, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { usePercentageAllocation } from './hooks/usePercentageAllocation';
 import './App.css';
+
+interface LedgerEvent {
+  amount: number;
+  type: string;
+}
 
 interface TimelinePoint {
   month: number;
@@ -14,6 +19,10 @@ interface TimelinePoint {
   netWorth: number;
   equityRatioPercent: number;
   taxPaidThisYear: number;
+  equityEvents: LedgerEvent[];
+  bondEvents: LedgerEvent[];
+  cashEvents: LedgerEvent[];
+  events: string[];
 }
 
 interface DcaScheduleSegment {
@@ -192,7 +201,7 @@ const CustomTooltip = ({ active, payload }: any) => {
 
 export default function App() {
   // Input fields state
-  const [currentAge, setCurrentAge] = useState(35);
+  const [currentAge, setCurrentAge] = useState(34);
   const [retirementAge, setRetirementAge] = useState(60);
   const [initialNetWorth, setInitialNetWorth] = useState(1500000);
   const [monthlySalary, setMonthlySalary] = useState(8500);
@@ -200,14 +209,14 @@ export default function App() {
 
   // Yield rates (percentages p.a.)
   const [equityYield, setEquityYield] = useState(7.0);
-  const [bondYield, setBondYield] = useState(4.0);
+  const [bondYield, setBondYield] = useState(2.0);
   const [cashYield, setCashYield] = useState(2.5);
   const [bondQuarterlyWithdrawal, setBondQuarterlyWithdrawal] = useState(10000);
 
   // DCA & Transition settings
-  const [dcaMonthlyAmount, setDcaMonthlyAmount] = useState(5000);
-  const [targetEquityRatio, setTargetEquityRatio] = useState(70);
-  const [postTargetStrategy, setPostTargetStrategy] = useState<'HOLD_CASH' | 'ALL_EQUITY' | 'PROPORTIONAL_REBALANCE'>('HOLD_CASH');
+  const [dcaMonthlyAmount, setDcaMonthlyAmount] = useState(6000);
+  const [targetEquityRatio, setTargetEquityRatio] = useState(80);
+  const [postTargetStrategy, setPostTargetStrategy] = useState<'HOLD_CASH' | 'ALL_EQUITY' | 'PROPORTIONAL_REBALANCE'>('PROPORTIONAL_REBALANCE');
 
   // German tax settings
   const [abgeltungsteuer, setAbgeltungsteuer] = useState(26.375);
@@ -216,10 +225,13 @@ export default function App() {
 
   // Hook for asset allocations (summing to 100%)
   const { allocation, setAllocationPercent } = usePercentageAllocation({
-    equity: 30,
-    bond: 50,
-    cash: 20,
+    equity: 39,
+    bond: 40,
+    cash: 21,
   });
+
+  const [logSearchQuery, setLogSearchQuery] = useState('');
+  const [expandedMonths, setExpandedMonths] = useState<Record<number, boolean>>({});
 
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [monthsToTarget, setMonthsToTarget] = useState<number>(-1);
@@ -321,54 +333,40 @@ export default function App() {
       let bondLiquidationAlerted = false;
 
       const start = new Date(2026, 5, 1); // June 1, 2026
+      const formatMoney = (val: number) => {
+        return '€' + Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
+      };
+
+      const m0NetWorth = equity + bond + cash;
+      let nextEqEvents: LedgerEvent[] = [{amount: equity, type: `Initial Equity Balance (${allocation.equity}% of initial Net Worth)`}];
+      let nextBondEvents: LedgerEvent[] = [{amount: bond, type: `Initial Bond Balance (${allocation.bond}% of initial Net Worth)`}];
+      let nextCashEvents: LedgerEvent[] = [{amount: cash, type: `Initial Cash Balance (${allocation.cash}% of initial Net Worth)`}];
+      let nextEvents: string[] = [`Simulation initialized at Age ${currentAge} with Net Worth of ${formatMoney(m0NetWorth)}.`];
 
       for (let m = 0; m <= totalMonths; m++) {
         const currentDate = new Date(start);
         currentDate.setMonth(start.getMonth() + m);
         const dateStr = currentDate.toISOString().split('T')[0];
 
-        // Calendar year reset check on Jan 1st
-        if (m > 0 && currentDate.getMonth() === 0) {
-          // Calculate Vorabpauschale
-          const basiszinsRate = basiszins / 100;
-          const basisertrag = equityStartOfYear * 0.70 * basiszinsRate;
-          const scaledBasisertrag = basisertrag * monthsHeldThisYear / 12;
-          const actualGain = Math.max(0, equity - equityStartOfYear - yearlyDcaInvested);
-          const vorabpauschale = Math.min(scaledBasisertrag, actualGain);
-          const taxableVorabpauschale = vorabpauschale * 0.70;
-
-          // Allowance reset for the new year
-          remainingAllowance = sparerpauschbetrag;
-          taxPaidThisYear = 0;
-
-          const taxableExcess = Math.max(0, taxableVorabpauschale - remainingAllowance);
-          const consumedAllowance = Math.min(taxableVorabpauschale, remainingAllowance);
-          remainingAllowance -= consumedAllowance;
-
-          const vorabTax = taxableExcess * (abgeltungsteuer / 100);
-          taxPaidThisYear += vorabTax;
-          cash -= vorabTax;
-
-          // Reset year trackers
-          equityStartOfYear = equity;
-          monthsHeldThisYear = 0;
-          yearlyDcaInvested = 0;
-        }
-
-        const age = currentAge + m / 12;
-        const netWorth = equity + bond + cash;
-        const ratio = netWorth === 0 ? 0 : (equity / netWorth) * 100;
+        const eqEvents = nextEqEvents;
+        const bondEvents = nextBondEvents;
+        const cashEvents = nextCashEvents;
+        const mEvents = nextEvents;
 
         localTimeline.push({
           month: m,
           date: dateStr,
-          age,
+          age: currentAge + m / 12,
           equityBalance: equity,
           bondBalance: bond,
           cashBalance: cash,
-          netWorth,
-          equityRatioPercent: ratio,
+          netWorth: equity + bond + cash,
+          equityRatioPercent: (equity + bond + cash) === 0 ? 0 : (equity / (equity + bond + cash)) * 100,
           taxPaidThisYear,
+          equityEvents: eqEvents,
+          bondEvents: bondEvents,
+          cashEvents: cashEvents,
+          events: mEvents,
         });
 
         monthsHeldThisYear++;
@@ -376,8 +374,55 @@ export default function App() {
         // Calculate next month's states
         if (m < totalMonths) {
           const nextM = m + 1;
+          const eqEvents: LedgerEvent[] = [];
+          const bondEvents: LedgerEvent[] = [];
+          const cashEvents: LedgerEvent[] = [];
+          const tempEvents: string[] = [];
+
+          // Calendar year reset check on Jan 1st
+          const checkDate = new Date(start);
+          checkDate.setMonth(start.getMonth() + nextM);
+          if (checkDate.getMonth() === 0) {
+            // Calculate Vorabpauschale
+            const basiszinsRate = basiszins / 100;
+            const basisertrag = equityStartOfYear * 0.70 * basiszinsRate;
+            const scaledBasisertrag = basisertrag * monthsHeldThisYear / 12;
+            const actualGain = Math.max(0, equity - equityStartOfYear - yearlyDcaInvested);
+            const vorabpauschale = Math.min(scaledBasisertrag, actualGain);
+            const taxableVorabpauschale = vorabpauschale * 0.70;
+
+            // Allowance reset for the new year
+            remainingAllowance = sparerpauschbetrag;
+            taxPaidThisYear = 0;
+
+            const taxableExcess = Math.max(0, taxableVorabpauschale - remainingAllowance);
+            const consumedAllowance = Math.min(taxableVorabpauschale, remainingAllowance);
+            remainingAllowance -= consumedAllowance;
+
+            const vorabTax = taxableExcess * (abgeltungsteuer / 100);
+            taxPaidThisYear += vorabTax;
+            cash -= vorabTax;
+
+            if (vorabTax > 0) {
+              cashEvents.push({amount: -vorabTax, type: `Deducted Equity Vorabpauschale tax`});
+              tempEvents.push(`Year-End Tax Reset: Sparerpauschbetrag allowance of ${formatMoney(sparerpauschbetrag)} reset. Paid Vorabpauschale tax of ${formatMoney(vorabTax)} from Cash.`);
+            } else {
+              tempEvents.push(`Year-End Tax Reset: Sparerpauschbetrag allowance of ${formatMoney(sparerpauschbetrag)} reset. No Vorabpauschale tax was due.`);
+            }
+
+            // Reset year trackers
+            equityStartOfYear = equity;
+            monthsHeldThisYear = 0;
+            yearlyDcaInvested = 0;
+          }
+
           const eqGrowth = equity * eqMonthlyYield;
           const cashGrowth = cash * cashMonthlyYield;
+
+          equity += eqGrowth;
+          if (eqGrowth > 0) {
+            eqEvents.push({amount: eqGrowth, type: `Earned compound yield (${equityYield}% p.a.)`});
+          }
 
           // Tax calculations
           const taxRate = abgeltungsteuer / 100;
@@ -390,6 +435,13 @@ export default function App() {
           }
 
           taxPaidThisYear += cashTax;
+
+          if (cashGrowth > 0) {
+            cashEvents.push({amount: cashGrowth, type: `Earned cash interest (${cashYield}% p.a.)`});
+            if (cashTax > 0) {
+              cashEvents.push({amount: -cashTax, type: `Paid Abgeltungsteuer on cash interest`});
+            }
+          }
 
           // Bond Quarterly Maturity & Coupon (every 3 months)
           let bondQuarterlyCashInflow = 0;
@@ -416,12 +468,18 @@ export default function App() {
               const excessCoupon = coupon - w;
               bond += excessCoupon;
               bondQuarterlyCashInflow = w - couponTax;
+
+              bondEvents.push({amount: excessCoupon, type: `Reinvested excess quarterly coupon`});
+              cashEvents.push({amount: bondQuarterlyCashInflow, type: `Received bond coupon withdrawal`});
             } else {
               // Case B: Withdrawal goal is >= coupon
               const remainder = w - coupon;
               const withdrawalFromMatured = Math.min(remainder, matured);
               bond -= withdrawalFromMatured;
               bondQuarterlyCashInflow = coupon + withdrawalFromMatured - couponTax;
+
+              bondEvents.push({amount: -withdrawalFromMatured, type: `Liquidated principal for quarterly withdrawal`});
+              cashEvents.push({amount: bondQuarterlyCashInflow, type: `Received bond coupon and matured principal`});
             }
           }
 
@@ -432,22 +490,26 @@ export default function App() {
             cash += cashGrowth - cashTax + bondQuarterlyCashInflow;
             if (postTargetStrategy === 'HOLD_CASH') {
               cash += savings;
+              cashEvents.push({amount: savings, type: `Received monthly savings (Post-Target Strategy: Hold Cash)`});
             } else if (postTargetStrategy === 'ALL_EQUITY') {
               equity += savings;
               yearlyDcaInvested += savings;
+              eqEvents.push({amount: savings, type: `Received monthly savings (Post-Target Strategy: All Equity)`});
             } else if (postTargetStrategy === 'PROPORTIONAL_REBALANCE') {
               const eqShare = savings * (targetEquityRatio / 100);
               const cashShare = savings - eqShare;
               cash += cashShare;
               equity += eqShare;
               yearlyDcaInvested += eqShare;
+
+              eqEvents.push({amount: eqShare, type: `Received monthly savings (Post-Target Strategy: Proportional Rebalance)`});
+              cashEvents.push({amount: cashShare, type: `Received monthly savings (Post-Target Strategy: Proportional Rebalance)`});
             }
           } else {
             // Pre-target: savings go to cash
             cash += cashGrowth - cashTax + bondQuarterlyCashInflow + savings;
+            cashEvents.push({amount: savings, type: `Received monthly savings`});
           }
-
-          equity += eqGrowth;
 
           // Monthly DCA Transfer & hierarchy (Cash -> Bonds -> Equity)
           let dca = dcaMonthlyAmount;
@@ -466,6 +528,9 @@ export default function App() {
               cash -= dca;
               equity += dca;
               actualDca = dca;
+
+              cashEvents.push({amount: -dca, type: `Deducted programmatic DCA transition to Equity`});
+              eqEvents.push({amount: dca, type: `Received programmatic DCA transition`});
             } else {
               const cashDrawn = cash;
               cash = 0;
@@ -479,6 +544,7 @@ export default function App() {
                 });
                 cashDepletionAlerted = true;
               }
+              tempEvents.push(`DCA Step-down Event: Cash reserves depleted. DCA transfer of ${formatMoney(dca)} funded via bond liquidations.`);
 
               const bondLiquidated = Math.min(remainingNeeded, bond);
               if (bondLiquidated > 0) {
@@ -490,11 +556,15 @@ export default function App() {
                   });
                   bondLiquidationAlerted = true;
                 }
+                bondEvents.push({amount: -bondLiquidated, type: `Liquidated principal to support DCA transition`});
               }
 
               bond -= bondLiquidated;
               equity += cashDrawn + bondLiquidated;
               actualDca = cashDrawn + bondLiquidated;
+
+              cashEvents.push({amount: -cashDrawn, type: `Cash depleted transferring remaining for DCA`});
+              eqEvents.push({amount: actualDca, type: `Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})`});
             }
           }
           yearlyDcaInvested += actualDca;
@@ -505,7 +575,13 @@ export default function App() {
           if (!targetReached && nextRatio >= targetEquityRatio) {
             targetReached = true;
             monthsToTargetVal = nextM;
+            tempEvents.push(`Target Equity Ratio Reached: Equity ratio is ${nextRatio.toFixed(2)}% (Target: ${targetEquityRatio}%). Programmatic bond withdrawals stopped.`);
           }
+
+          nextEqEvents = eqEvents;
+          nextBondEvents = bondEvents;
+          nextCashEvents = cashEvents;
+          nextEvents = tempEvents;
         }
       }
 
@@ -1128,6 +1204,253 @@ export default function App() {
                   />
                 </AreaChart>
               </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Calculation Explanation Log */}
+          <div className="glass-panel log-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div className="log-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+              <h3 className="chart-title" style={{ margin: 0 }}>Calculation & Transition Trace Log</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => {
+                    const next: Record<number, boolean> = {};
+                    timeline.forEach(pt => {
+                      next[pt.month] = true;
+                    });
+                    setExpandedMonths(next);
+                  }}
+                  className="apply-rec-btn"
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '11px',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                  }}
+                >
+                  Expand All
+                </button>
+                <button
+                  onClick={() => setExpandedMonths({})}
+                  className="apply-rec-btn"
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '11px',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                  }}
+                >
+                  Collapse All
+                </button>
+                <input
+                  type="text"
+                  placeholder="Filter logs (e.g. Month 12, tax, rebalance)..."
+                  value={logSearchQuery}
+                  onChange={(e) => setLogSearchQuery(e.target.value)}
+                  className="log-search-input"
+                  style={{
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    color: 'var(--text-primary)',
+                    fontSize: '13px',
+                    outline: 'none',
+                    width: '260px',
+                    transition: 'all 0.2s',
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="log-scroll-container" style={{ maxHeight: '400px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>
+              {timeline.filter(pt => {
+                if (!logSearchQuery) return true;
+                const query = logSearchQuery.toLowerCase();
+                const dateFormatted = new Date(pt.date).toLocaleDateString('en-US', {
+                  year: 'numeric',
+                  month: 'short',
+                }).toLowerCase();
+                const ageStr = `age ${pt.age.toFixed(2)}`.toLowerCase();
+                const monthStr = `month ${pt.month}`.toLowerCase();
+                return (
+                  monthStr.includes(query) ||
+                  dateFormatted.includes(query) ||
+                  ageStr.includes(query) ||
+                  (pt.equityEvents && pt.equityEvents.some(e => e.type.toLowerCase().includes(query))) ||
+                  (pt.bondEvents && pt.bondEvents.some(e => e.type.toLowerCase().includes(query))) ||
+                  (pt.cashEvents && pt.cashEvents.some(e => e.type.toLowerCase().includes(query))) ||
+                  (pt.events && pt.events.some(e => e.toLowerCase().includes(query)))
+                );
+              }).length === 0 ? (
+                <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '24px 0', fontSize: '14px' }}>
+                  No simulation records match your filter query.
+                </div>
+              ) : (
+                timeline.filter(pt => {
+                  if (!logSearchQuery) return true;
+                  const query = logSearchQuery.toLowerCase();
+                  const dateFormatted = new Date(pt.date).toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                  }).toLowerCase();
+                  const ageStr = `age ${pt.age.toFixed(2)}`.toLowerCase();
+                  const monthStr = `month ${pt.month}`.toLowerCase();
+                  return (
+                    monthStr.includes(query) ||
+                    dateFormatted.includes(query) ||
+                    ageStr.includes(query) ||
+                    (pt.equityEvents && pt.equityEvents.some(e => e.type.toLowerCase().includes(query))) ||
+                    (pt.bondEvents && pt.bondEvents.some(e => e.type.toLowerCase().includes(query))) ||
+                    (pt.cashEvents && pt.cashEvents.some(e => e.type.toLowerCase().includes(query))) ||
+                    (pt.events && pt.events.some(e => e.toLowerCase().includes(query)))
+                  );
+                }).map((pt) => {
+                  const dateFormatted = new Date(pt.date).toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                  });
+                  const formatMoney = (val: number) => {
+                    return '€' + Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
+                  };
+                  const isExpanded = !!expandedMonths[pt.month];
+                  return (
+                    <div
+                      key={pt.month}
+                      className="log-item-card"
+                      onClick={() => setExpandedMonths(prev => ({ ...prev, [pt.month]: !prev[pt.month] }))}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isExpanded ? '1px solid rgba(255,255,255,0.03)' : 'none', paddingBottom: isExpanded ? '8px' : '0', transition: 'padding 0.2s' }}>
+                        <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
+                          Month {pt.month} ({dateFormatted})
+                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                          <span>Age: <strong style={{ color: 'var(--text-primary)' }}>{pt.age.toFixed(2)}</strong></span>
+                          <span>Net Worth: <strong style={{ color: 'var(--text-primary)' }}>{formatMoney(pt.netWorth)}</strong></span>
+                          <span>Equity Ratio: <strong style={{ color: 'var(--accent-primary)' }}>{pt.equityRatioPercent.toFixed(1)}%</strong></span>
+                          <div style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}>
+                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </div>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <>
+                          <div style={{ display: 'flex', flexDirection: 'column', marginTop: '12px' }} onClick={(e) => e.stopPropagation()}>
+                            <div style={{
+                              background: 'rgba(139, 92, 246, 0.03)',
+                              borderLeft: '3px solid var(--equity-color)',
+                              padding: '12px 16px',
+                              borderRadius: '0 8px 8px 0',
+                              marginBottom: '12px'
+                            }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: '#c084fc', display: 'block', marginBottom: '8px' }}>
+                                Equity: {formatMoney(pt.equityBalance)}
+                              </span>
+                              {pt.equityEvents && pt.equityEvents.length > 0 ? (
+                                <table style={{ width: '100%', fontSize: '13px', color: 'var(--text-secondary)', borderCollapse: 'collapse' }}>
+                                  <tbody>
+                                    {pt.equityEvents.map((evt, idx) => (
+                                      <tr key={idx} style={{ borderBottom: idx !== pt.equityEvents.length - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none' }}>
+                                        <td style={{ padding: '6px 0', width: '80%', verticalAlign: 'top' }}>{evt.type}</td>
+                                        <td style={{ padding: '6px 0', width: '20%', textAlign: 'right', verticalAlign: 'top', color: evt.amount >= 0 ? '#34d399' : '#f87171', fontWeight: 600 }}>
+                                          {evt.amount >= 0 ? '+' : ''}{formatMoney(evt.amount)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Balance unchanged.</div>
+                              )}
+                            </div>
+
+                            <div style={{
+                              background: 'rgba(59, 130, 246, 0.03)',
+                              borderLeft: '3px solid var(--bond-color)',
+                              padding: '12px 16px',
+                              borderRadius: '0 8px 8px 0',
+                              marginBottom: '12px'
+                            }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: '#60a5fa', display: 'block', marginBottom: '8px' }}>
+                                Bonds: {formatMoney(pt.bondBalance)}
+                              </span>
+                              {pt.bondEvents && pt.bondEvents.length > 0 ? (
+                                <table style={{ width: '100%', fontSize: '13px', color: 'var(--text-secondary)', borderCollapse: 'collapse' }}>
+                                  <tbody>
+                                    {pt.bondEvents.map((evt, idx) => (
+                                      <tr key={idx} style={{ borderBottom: idx !== pt.bondEvents.length - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none' }}>
+                                        <td style={{ padding: '6px 0', width: '80%', verticalAlign: 'top' }}>{evt.type}</td>
+                                        <td style={{ padding: '6px 0', width: '20%', textAlign: 'right', verticalAlign: 'top', color: evt.amount >= 0 ? '#34d399' : '#f87171', fontWeight: 600 }}>
+                                          {evt.amount >= 0 ? '+' : ''}{formatMoney(evt.amount)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Balance unchanged.</div>
+                              )}
+                            </div>
+
+                            <div style={{
+                              background: 'rgba(16, 185, 129, 0.03)',
+                              borderLeft: '3px solid var(--cash-color)',
+                              padding: '12px 16px',
+                              borderRadius: '0 8px 8px 0'
+                            }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: '#34d399', display: 'block', marginBottom: '8px' }}>
+                                Cash: {formatMoney(pt.cashBalance)}
+                              </span>
+                              {pt.cashEvents && pt.cashEvents.length > 0 ? (
+                                <table style={{ width: '100%', fontSize: '13px', color: 'var(--text-secondary)', borderCollapse: 'collapse' }}>
+                                  <tbody>
+                                    {pt.cashEvents.map((evt, idx) => (
+                                      <tr key={idx} style={{ borderBottom: idx !== pt.cashEvents.length - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none' }}>
+                                        <td style={{ padding: '6px 0', width: '80%', verticalAlign: 'top' }}>{evt.type}</td>
+                                        <td style={{ padding: '6px 0', width: '20%', textAlign: 'right', verticalAlign: 'top', color: evt.amount >= 0 ? '#34d399' : '#f87171', fontWeight: 600 }}>
+                                          {evt.amount >= 0 ? '+' : ''}{formatMoney(evt.amount)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Balance unchanged.</div>
+                              )}
+                            </div>
+                          </div>
+
+                          {pt.events && pt.events.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }} onClick={(e) => e.stopPropagation()}>
+                              {pt.events.map((evt, idx) => (
+                                <div key={idx} style={{
+                                  background: 'rgba(251, 146, 60, 0.04)',
+                                  border: '1px solid rgba(251, 146, 60, 0.1)',
+                                  borderRadius: '6px',
+                                  padding: '6px 12px',
+                                  fontSize: '12px',
+                                  color: '#fdba74',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px',
+                                }}>
+                                  <span style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: '9px', background: 'rgba(251, 146, 60, 0.15)', padding: '2px 6px', borderRadius: '4px', color: '#fb923c' }}>
+                                    Event
+                                  </span>
+                                  <span>{evt}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </main>
