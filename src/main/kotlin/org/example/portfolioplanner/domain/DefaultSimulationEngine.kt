@@ -173,23 +173,32 @@ class DefaultSimulationEngine : SimulationEngine {
                 val matured = bond.divide(three, 8, RoundingMode.HALF_UP)
                 val w = if (targetReached) BigDecimal.ZERO else request.bondQuarterlyWithdrawal
 
-                if (w.compareTo(coupon) < 0) {
-                    // Case A: Withdrawal goal is smaller than the coupon payment
-                    val excessCoupon = coupon.subtract(w)
-                    bond = bond.add(excessCoupon) // Reinvest excess coupon
-                    bondQuarterlyCashInflow = w.subtract(couponTax) // Cash gets withdrawal minus tax
+                bond = bond.add(coupon)
+                if (coupon.compareTo(BigDecimal.ZERO) > 0) {
+                    bondEvents.add(LedgerEvent(coupon, "Earned quarterly bond coupon"))
+                }
 
-                    bondEvents.add(LedgerEvent(excessCoupon, "Reinvested excess quarterly coupon"))
-                    cashEvents.add(LedgerEvent(bondQuarterlyCashInflow, "Received bond coupon withdrawal"))
-                } else {
-                    // Case B: Withdrawal goal is greater than or equal to the coupon payment
-                    val remainder = w.subtract(coupon)
-                    val withdrawalFromMatured = remainder.min(matured)
-                    bond = bond.subtract(withdrawalFromMatured) // Withdrawal reduces bond balance
-                    bondQuarterlyCashInflow = coupon.add(withdrawalFromMatured).subtract(couponTax)
+                if (couponTax.compareTo(BigDecimal.ZERO) > 0) {
+                    cash = cash.subtract(couponTax)
+                    cashEvents.add(LedgerEvent(couponTax.negate(), "Paid Abgeltungsteuer on bond coupon"))
+                }
 
-                    bondEvents.add(LedgerEvent(withdrawalFromMatured.negate(), "Liquidated principal for quarterly withdrawal"))
-                    cashEvents.add(LedgerEvent(bondQuarterlyCashInflow, "Received bond coupon and matured principal"))
+                var actualWithdrawal = BigDecimal.ZERO
+                if (w.compareTo(BigDecimal.ZERO) > 0) {
+                    if (w.compareTo(coupon) < 0) {
+                        actualWithdrawal = w
+                    } else {
+                        val remainder = w.subtract(coupon)
+                        val withdrawalFromMatured = remainder.min(matured)
+                        actualWithdrawal = coupon.add(withdrawalFromMatured)
+                    }
+                }
+
+                bondQuarterlyCashInflow = actualWithdrawal
+                if (actualWithdrawal.compareTo(BigDecimal.ZERO) > 0) {
+                    bond = bond.subtract(actualWithdrawal)
+                    bondEvents.add(LedgerEvent(actualWithdrawal.negate(), "Quarterly bond withdrawal"))
+                    cashEvents.add(LedgerEvent(actualWithdrawal, "Received bond quarterly withdrawal"))
                 }
             }
 

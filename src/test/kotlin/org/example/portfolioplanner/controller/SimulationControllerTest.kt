@@ -6,6 +6,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.get
 import org.springframework.test.web.servlet.post
 
 @SpringBootTest
@@ -51,4 +52,32 @@ class SimulationControllerTest {
             jsonPath("$.timeline[12].equityRatioPercent") { value(40.32) }
         }
     }
+
+    @Test
+    fun `test defaults endpoint returns values from application yaml`() {
+        mockMvc.get("/api/defaults")
+            .andExpect {
+                status { isOk() }
+                content { contentType(MediaType.APPLICATION_JSON) }
+                jsonPath("$.currentAge") { value(34) }
+                jsonPath("$.retirementAge") { value(60) }
+                jsonPath("$.initialNetWorth") { value(1500000.0) }
+                jsonPath("$.monthlySalary") { value(8500.0) }
+                jsonPath("$.monthlyExpenses") { value(3500.0) }
+                jsonPath("$.allocation.equityPercentage") { value(39.0) }
+                jsonPath("$.allocation.bondPercentage") { value(40.0) }
+                jsonPath("$.allocation.cashPercentage") { value(21.0) }
+                jsonPath("$.allocation.equityYieldPercent") { value(7.0) }
+                jsonPath("$.allocation.bondYieldPercent") { value(2.0) }
+                jsonPath("$.allocation.cashYieldPercent") { value(2.5) }
+                jsonPath("$.abgeltungsteuerPercent") { value(26.375) }
+                jsonPath("$.sparerpauschbetrag") { value(1000.0) }
+                jsonPath("$.basiszinsPercent") { value(2.29) }
+                jsonPath("$.bondQuarterlyWithdrawal") { value(10000.0) }
+                jsonPath("$.dcaMonthlyAmount") { value(6000.0) }
+                jsonPath("$.targetEquityRatioPercent") { value(80.0) }
+                jsonPath("$.postTargetStrategy") { value("PROPORTIONAL_REBALANCE") }
+            }
+    }
 }
+

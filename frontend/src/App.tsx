@@ -64,7 +64,7 @@ const cleanAndFormat = (valStr: string) => {
   }
 };
 
-const FormattedNumberInput = ({
+export const FormattedNumberInput = ({
   value,
   onChange,
   min = 0,
@@ -75,17 +75,18 @@ const FormattedNumberInput = ({
   min?: number;
   max?: number;
 }) => {
-  const [localStr, setLocalStr] = useState('');
+  const [localStr, setLocalStr] = useState(() => Intl.NumberFormat('en-US', { maximumFractionDigits: 10 }).format(value));
+  const [prevValue, setPrevValue] = useState(value);
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
 
-  // Sync with value prop when NOT focused
-  useEffect(() => {
+  if (value !== prevValue) {
+    setPrevValue(value);
     if (!focused) {
       setLocalStr(Intl.NumberFormat('en-US', { maximumFractionDigits: 10 }).format(value));
     }
-  }, [value, focused]);
+  }
 
   useLayoutEffect(() => {
     if (focused && inputRef.current && cursorRef.current !== null) {
@@ -116,14 +117,27 @@ const FormattedNumberInput = ({
     const val = target.value;
     const selStart = target.selectionStart || 0;
 
-    // Count non-comma characters before selection
-    const nonCommasBefore = val.slice(0, selStart).replace(/,/g, '').length;
+    // Count valid characters (digits and the first decimal point) before selection
+    let nonCommasBefore = 0;
+    const prefix = val.slice(0, selStart);
+    for (let i = 0; i < prefix.length; i++) {
+      const char = prefix[i];
+      if (char >= '0' && char <= '9') {
+        nonCommasBefore++;
+      } else if (char === '.') {
+        // Only count the first dot in the entire input
+        const firstDotIdx = val.indexOf('.');
+        if (firstDotIdx !== -1 && i === firstDotIdx) {
+          nonCommasBefore++;
+        }
+      }
+    }
 
     // Format new value
     const formatted = cleanAndFormat(val);
 
     // Find new cursor position
-    let newCursorPos = 0;
+    let newCursorPos = formatted.length;
     let nonCommaCount = 0;
     for (let i = 0; i < formatted.length; i++) {
       if (nonCommaCount === nonCommasBefore) {
@@ -134,12 +148,17 @@ const FormattedNumberInput = ({
         nonCommaCount++;
       }
     }
-    if (nonCommaCount < nonCommasBefore) {
-      newCursorPos = formatted.length;
-    }
 
-    cursorRef.current = newCursorPos;
-    setLocalStr(formatted);
+    if (formatted === localStr) {
+      if (inputRef.current) {
+        inputRef.current.value = formatted;
+        inputRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+      cursorRef.current = null;
+    } else {
+      cursorRef.current = newCursorPos;
+      setLocalStr(formatted);
+    }
 
     // Call onChange with parsed value, but clamp only on blur to allow typing incomplete/temporary states
     const parsed = parseFloat(formatted.replace(/,/g, ''));
@@ -161,9 +180,19 @@ const FormattedNumberInput = ({
   );
 };
 
-const CustomTooltip = ({ active, payload }: any) => {
+interface TooltipPayloadItem {
+  payload: TimelinePoint;
+}
+
+const CustomTooltip = ({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: TooltipPayloadItem[];
+}) => {
   if (active && payload && payload.length) {
-    const data = payload[0].payload as TimelinePoint;
+    const data = payload[0].payload;
     const formattedDate = new Date(data.date).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -291,8 +320,9 @@ export default function App() {
           setAlerts(data.alerts || []);
           setBackendStatus('CONNECTED');
         }
-      } catch (err: any) {
-        console.warn('API error, executing client-side fallback simulation:', err.message);
+      } catch (err) {
+        const error = err as Error;
+        console.warn('API error, executing client-side fallback simulation:', error.message);
         if (active) {
           setBackendStatus('OFFLINE');
           runLocalSimulation();
@@ -844,7 +874,7 @@ export default function App() {
                 </div>
                 <select
                   value={postTargetStrategy}
-                  onChange={(e) => setPostTargetStrategy(e.target.value as any)}
+                  onChange={(e) => setPostTargetStrategy(e.target.value as typeof postTargetStrategy)}
                   className="post-target-select"
                 >
                   <option value="HOLD_CASH">Hold Cash (100% Cash)</option>
