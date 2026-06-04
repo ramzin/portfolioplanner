@@ -61,9 +61,9 @@ class SimulationControllerTest {
                 content { contentType(MediaType.APPLICATION_JSON) }
                 jsonPath("$.currentAge") { value(34) }
                 jsonPath("$.retirementAge") { value(60) }
-                jsonPath("$.initialNetWorth") { value(1500000.0) }
-                jsonPath("$.monthlySalary") { value(8500.0) }
-                jsonPath("$.monthlyExpenses") { value(3500.0) }
+                jsonPath("$.initialNetWorth") { value(647000.0) }
+                jsonPath("$.monthlySalary") { value(4500.0) }
+                jsonPath("$.monthlyExpenses") { value(2500.0) }
                 jsonPath("$.allocation.equityPercentage") { value(39.0) }
                 jsonPath("$.allocation.bondPercentage") { value(40.0) }
                 jsonPath("$.allocation.cashPercentage") { value(21.0) }
@@ -73,10 +73,10 @@ class SimulationControllerTest {
                 jsonPath("$.abgeltungsteuerPercent") { value(26.375) }
                 jsonPath("$.sparerpauschbetrag") { value(1000.0) }
                 jsonPath("$.basiszinsPercent") { value(2.29) }
-                jsonPath("$.bondQuarterlyWithdrawal") { value(10000.0) }
+                jsonPath("$.bondQuarterlyWithdrawal") { value(15000.0) }
                 jsonPath("$.dcaMonthlyAmount") { value(6000.0) }
                 jsonPath("$.targetEquityRatioPercent") { value(80.0) }
-                jsonPath("$.postTargetStrategy") { value("PROPORTIONAL_REBALANCE") }
+                jsonPath("$.postTargetStrategy") { value("ACCUMULATE_CASH") }
             }
     }
 }

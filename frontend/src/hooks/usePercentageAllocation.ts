@@ -45,5 +45,6 @@ export function usePercentageAllocation(initial: Allocation) {
   return {
     allocation,
     setAllocationPercent,
+    setAllocation,
   };
 }

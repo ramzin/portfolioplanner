@@ -32,7 +32,7 @@ interface DcaScheduleSegment {
 
 interface SimulationAlert {
   month: number;
-  type: 'CASH_DEPLETION' | 'BOND_LIQUIDATION';
+  type: 'CASH_DEPLETION' | 'BOND_LIQUIDATION' | 'EMERGENCY_FUND_LIMIT' | 'MINIMUM_BOND_LIMIT';
   message: string;
 }
 
@@ -245,7 +245,14 @@ export default function App() {
   // DCA & Transition settings
   const [dcaMonthlyAmount, setDcaMonthlyAmount] = useState(6000);
   const [targetEquityRatio, setTargetEquityRatio] = useState(80);
-  const [postTargetStrategy, setPostTargetStrategy] = useState<'HOLD_CASH' | 'ALL_EQUITY' | 'PROPORTIONAL_REBALANCE'>('PROPORTIONAL_REBALANCE');
+  const [postTargetStrategy, setPostTargetStrategy] = useState<'ACCUMULATE_CASH' | 'EQUITY_RATIO_GUARD'>('ACCUMULATE_CASH');
+  const [emergencyFund, setEmergencyFund] = useState(50000);
+  const [minimumBondAmount, setMinimumBondAmount] = useState(100000);
+
+  // Bond withdrawal schedule
+  const [bondWithdrawalSchedule, setBondWithdrawalSchedule] = useState<DcaScheduleSegment[]>([]);
+  const [newBondSegMonth, setNewBondSegMonth] = useState(12);
+  const [newBondSegAmount, setNewBondSegAmount] = useState(5000);
 
   // German tax settings
   const [abgeltungsteuer, setAbgeltungsteuer] = useState(26.375);
@@ -253,7 +260,7 @@ export default function App() {
   const [basiszins, setBasiszins] = useState(2.29);
 
   // Hook for asset allocations (summing to 100%)
-  const { allocation, setAllocationPercent } = usePercentageAllocation({
+  const { allocation, setAllocationPercent, setAllocation } = usePercentageAllocation({
     equity: 39,
     bond: 40,
     cash: 21,
@@ -270,6 +277,44 @@ export default function App() {
   const [newSegAmount, setNewSegAmount] = useState(2000);
   const [backendStatus, setBackendStatus] = useState<'CONNECTED' | 'OFFLINE'>('OFFLINE');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Load configuration defaults from backend on mount
+  useEffect(() => {
+    async function loadDefaults() {
+      try {
+        const res = await fetch('/api/defaults');
+        if (res.ok) {
+          const data = await res.json();
+          setCurrentAge(data.currentAge);
+          setRetirementAge(data.retirementAge);
+          setInitialNetWorth(data.initialNetWorth);
+          setMonthlySalary(data.monthlySalary);
+          setMonthlyExpenses(data.monthlyExpenses);
+          setAllocation({
+            equity: data.allocation.equityPercentage,
+            bond: data.allocation.bondPercentage,
+            cash: data.allocation.cashPercentage,
+          });
+          setEquityYield(data.allocation.equityYieldPercent);
+          setBondYield(data.allocation.bondYieldPercent);
+          setCashYield(data.allocation.cashYieldPercent);
+          setAbgeltungsteuer(data.abgeltungsteuerPercent);
+          setSparerpauschbetrag(data.sparerpauschbetrag);
+          setBasiszins(data.basiszinsPercent);
+          setBondQuarterlyWithdrawal(data.bondQuarterlyWithdrawal);
+          setDcaMonthlyAmount(data.dcaMonthlyAmount);
+          setTargetEquityRatio(data.targetEquityRatioPercent);
+          setPostTargetStrategy(data.postTargetStrategy);
+          if (data.minimumBondAmount !== undefined) setMinimumBondAmount(Number(data.minimumBondAmount));
+          if (data.emergencyFund !== undefined) setEmergencyFund(Math.max(1000, Number(data.emergencyFund)));
+          setBackendStatus('CONNECTED');
+        }
+      } catch (err) {
+        console.warn('Could not load configuration defaults from backend, using hardcoded client defaults:', err);
+      }
+    }
+    loadDefaults();
+  }, [setAllocation]);
 
   // Perform Simulation
   useEffect(() => {
@@ -295,6 +340,9 @@ export default function App() {
       targetEquityRatioPercent: targetEquityRatio,
       dcaSchedule: dcaSchedule.length > 0 ? dcaSchedule : undefined,
       postTargetStrategy: postTargetStrategy,
+      minimumBondAmount: minimumBondAmount,
+      bondWithdrawalSchedule: bondWithdrawalSchedule.length > 0 ? bondWithdrawalSchedule : undefined,
+      emergencyFund: emergencyFund,
     };
 
     let active = true;
@@ -361,6 +409,8 @@ export default function App() {
       const localAlerts: SimulationAlert[] = [];
       let cashDepletionAlerted = false;
       let bondLiquidationAlerted = false;
+      let emergencyFundAlerted = false;
+      let minimumBondAlerted = false;
 
       const start = new Date(2026, 5, 1); // June 1, 2026
       const formatMoney = (val: number) => {
@@ -431,11 +481,32 @@ export default function App() {
 
             const vorabTax = taxableExcess * (abgeltungsteuer / 100);
             taxPaidThisYear += vorabTax;
-            cash -= vorabTax;
 
             if (vorabTax > 0) {
-              cashEvents.push({amount: -vorabTax, type: `Deducted Equity Vorabpauschale tax`});
-              tempEvents.push(`Year-End Tax Reset: Sparerpauschbetrag allowance of ${formatMoney(sparerpauschbetrag)} reset. Paid Vorabpauschale tax of ${formatMoney(vorabTax)} from Cash.`);
+              const cashDrawn = Math.min(vorabTax, cash);
+              cash -= cashDrawn;
+              if (cashDrawn > 0) {
+                cashEvents.push({ amount: -cashDrawn, type: `Deducted Equity Vorabpauschale tax from Cash` });
+              }
+
+              const remainingTax = vorabTax - cashDrawn;
+              if (remainingTax > 0) {
+                const bondLiquidated = Math.min(remainingTax, bond);
+                bond -= bondLiquidated;
+                if (bondLiquidated > 0) {
+                  bondEvents.push({ amount: -bondLiquidated, type: `Liquidated bond principal to pay Equity Vorabpauschale tax` });
+                }
+
+                const remainingAfterBond = remainingTax - bondLiquidated;
+                if (remainingAfterBond > 0) {
+                  const equityLiquidated = Math.min(remainingAfterBond, equity);
+                  equity -= equityLiquidated;
+                  if (equityLiquidated > 0) {
+                    eqEvents.push({ amount: -equityLiquidated, type: `Liquidated Equity to pay remaining Equity Vorabpauschale tax` });
+                  }
+                }
+              }
+              tempEvents.push(`Year-End Tax Reset: Sparerpauschbetrag allowance of ${formatMoney(sparerpauschbetrag)} reset. Paid Vorabpauschale tax of ${formatMoney(vorabTax)}.`);
             } else {
               tempEvents.push(`Year-End Tax Reset: Sparerpauschbetrag allowance of ${formatMoney(sparerpauschbetrag)} reset. No Vorabpauschale tax was due.`);
             }
@@ -480,7 +551,7 @@ export default function App() {
             const quarterlyYield = bondYieldRate / 4;
             const coupon = bond * quarterlyYield;
 
-            // Tax on coupon (100% taxable, no partial exemption)
+            // Tax on coupon (100% taxable)
             let couponTax = 0;
             if (coupon > 0) {
               const taxable = Math.max(0, coupon - remainingAllowance);
@@ -490,50 +561,91 @@ export default function App() {
             }
             taxPaidThisYear += couponTax;
 
-            const matured = bond / 3;
-            const w = targetReached ? 0 : bondQuarterlyWithdrawal;
+            // Schedule-aware requested withdrawal (zero post-target)
+            let requestedWithdrawal = targetReached ? 0 : bondQuarterlyWithdrawal;
+            if (!targetReached && bondWithdrawalSchedule.length > 0) {
+              const active = bondWithdrawalSchedule
+                .filter((s) => s.startMonth <= nextM)
+                .reduce((max, s) => (max.startMonth === -1 || s.startMonth > max.startMonth ? s : max), { startMonth: -1, dcaAmount: bondQuarterlyWithdrawal });
+              if (active.startMonth >= 0) requestedWithdrawal = active.dcaAmount;
+            }
 
-            if (w < coupon) {
-              // Case A: Withdrawal goal is smaller than coupon
-              const excessCoupon = coupon - w;
-              bond += excessCoupon;
-              bondQuarterlyCashInflow = w - couponTax;
+            // Add coupon to bond balance
+            bond += coupon;
+            if (coupon > 0) bondEvents.push({ amount: coupon, type: `Earned quarterly bond coupon` });
 
-              bondEvents.push({amount: excessCoupon, type: `Reinvested excess quarterly coupon`});
-              cashEvents.push({amount: bondQuarterlyCashInflow, type: `Received bond coupon withdrawal`});
-            } else {
-              // Case B: Withdrawal goal is >= coupon
-              const remainder = w - coupon;
-              const withdrawalFromMatured = Math.min(remainder, matured);
-              bond -= withdrawalFromMatured;
-              bondQuarterlyCashInflow = coupon + withdrawalFromMatured - couponTax;
+            if (couponTax > 0) {
+              const cashDrawn = Math.min(couponTax, cash);
+              cash -= cashDrawn;
+              if (cashDrawn > 0) {
+                cashEvents.push({ amount: -cashDrawn, type: `Paid Abgeltungsteuer on bond coupon from Cash` });
+              }
 
-              bondEvents.push({amount: -withdrawalFromMatured, type: `Liquidated principal for quarterly withdrawal`});
-              cashEvents.push({amount: bondQuarterlyCashInflow, type: `Received bond coupon and matured principal`});
+              const remainingTax = couponTax - cashDrawn;
+              if (remainingTax > 0) {
+                const bondLiquidated = Math.min(remainingTax, bond);
+                bond -= bondLiquidated;
+                if (bondLiquidated > 0) {
+                  bondEvents.push({ amount: -bondLiquidated, type: `Liquidated bond principal to pay coupon tax` });
+                }
+
+                const remainingAfterBond = remainingTax - bondLiquidated;
+                if (remainingAfterBond > 0) {
+                  const equityLiquidated = Math.min(remainingAfterBond, equity);
+                  equity -= equityLiquidated;
+                  if (equityLiquidated > 0) {
+                    eqEvents.push({ amount: -equityLiquidated, type: `Liquidated Equity to pay remaining coupon tax` });
+                  }
+                }
+              }
+            }
+
+            // Apply minimum bond floor
+            const availableForWithdrawal = Math.max(0, bond - minimumBondAmount);
+            const w = Math.min(requestedWithdrawal, availableForWithdrawal);
+
+            if (requestedWithdrawal > 0 && w < requestedWithdrawal && !minimumBondAlerted) {
+              localAlerts.push({ month: nextM, type: 'MINIMUM_BOND_LIMIT', message: `Minimum bond floor reached at Month ${nextM}` });
+              minimumBondAlerted = true;
+              tempEvents.push(`⚠ Minimum Bond Floor: Requested quarterly withdrawal of ${formatMoney(requestedWithdrawal)} restricted to ${formatMoney(w)} to maintain the minimum bond balance of ${formatMoney(minimumBondAmount)}.`);
+            }
+
+            if (w > 0) {
+              bond -= w;
+              bondQuarterlyCashInflow = w;
+              bondEvents.push({ amount: -w, type: `Quarterly bond withdrawal` });
+              cashEvents.push({ amount: w, type: `Received bond quarterly withdrawal` });
             }
           }
 
           const savings = monthlySalary - monthlyExpenses;
 
           if (targetReached) {
-            // Cash compounds interest and bond coupon yields compound, savings allocated based on strategy
-            cash += cashGrowth - cashTax + bondQuarterlyCashInflow;
-            if (postTargetStrategy === 'HOLD_CASH') {
-              cash += savings;
-              cashEvents.push({amount: savings, type: `Received monthly savings (Post-Target Strategy: Hold Cash)`});
-            } else if (postTargetStrategy === 'ALL_EQUITY') {
-              equity += savings;
-              yearlyDcaInvested += savings;
-              eqEvents.push({amount: savings, type: `Received monthly savings (Post-Target Strategy: All Equity)`});
-            } else if (postTargetStrategy === 'PROPORTIONAL_REBALANCE') {
-              const eqShare = savings * (targetEquityRatio / 100);
-              const cashShare = savings - eqShare;
-              cash += cashShare;
-              equity += eqShare;
-              yearlyDcaInvested += eqShare;
+            // Cash compounds interest + bond coupon + savings — all accumulate in cash
+            cash += cashGrowth - cashTax + bondQuarterlyCashInflow + savings;
+            cashEvents.push({amount: savings, type: `Received monthly savings`});
 
-              eqEvents.push({amount: eqShare, type: `Received monthly savings (Post-Target Strategy: Proportional Rebalance)`});
-              cashEvents.push({amount: cashShare, type: `Received monthly savings (Post-Target Strategy: Proportional Rebalance)`});
+            // Post-target Equity Ratio Guard: deploy excess cash based on equity ratio
+            if (postTargetStrategy === 'EQUITY_RATIO_GUARD') {
+              const excessCash = Math.max(0, cash - emergencyFund);
+              if (excessCash > 0) {
+                const nw = equity + bond + cash;
+                const ratioNow = nw === 0 ? 0 : (equity / nw) * 100;
+                if (ratioNow >= targetEquityRatio) {
+                  // At/above target — park excess in bonds
+                  cash -= excessCash;
+                  bond += excessCash;
+                  cashEvents.push({ amount: -excessCash, type: `Invested excess cash into Bonds (Equity Ratio Guard: ratio ≥ target)` });
+                  bondEvents.push({ amount: excessCash, type: `Received cash surplus via Equity Ratio Guard` });
+                } else {
+                  // Below target — restore ratio by buying equity
+                  cash -= excessCash;
+                  equity += excessCash;
+                  yearlyDcaInvested += excessCash;
+                  cashEvents.push({ amount: -excessCash, type: `Invested excess cash into Equity (Equity Ratio Guard: ratio < target, restoring)` });
+                  eqEvents.push({ amount: excessCash, type: `Received cash surplus via Equity Ratio Guard (restoring target ratio)` });
+                }
+              }
             }
           } else {
             // Pre-target: savings go to cash
@@ -541,7 +653,7 @@ export default function App() {
             cashEvents.push({amount: savings, type: `Received monthly savings`});
           }
 
-          // Monthly DCA Transfer & hierarchy (Cash -> Bonds -> Equity)
+          // Monthly DCA Transfer — continues both pre- and post-target; hierarchy: Cash -> Equity
           let dca = dcaMonthlyAmount;
           if (dcaSchedule.length > 0) {
             const activeSegment = dcaSchedule
@@ -553,8 +665,9 @@ export default function App() {
           }
 
           let actualDca = 0;
-          if (dca > 0) {
-            if (cash >= dca) {
+          if (dca > 0 && !targetReached) {
+            const availableCash = Math.max(0, cash - emergencyFund);
+            if (availableCash >= dca) {
               cash -= dca;
               equity += dca;
               actualDca = dca;
@@ -562,8 +675,12 @@ export default function App() {
               cashEvents.push({amount: -dca, type: `Deducted programmatic DCA transition to Equity`});
               eqEvents.push({amount: dca, type: `Received programmatic DCA transition`});
             } else {
-              const cashDrawn = cash;
-              cash = 0;
+              const cashDrawn = availableCash;
+              cash -= cashDrawn;
+              if (cashDrawn > 0) {
+                cashEvents.push({amount: -cashDrawn, type: `Deducted Cash surplus above emergency fund for DCA`});
+              }
+
               const remainingNeeded = dca - cashDrawn;
 
               if (!cashDepletionAlerted) {
@@ -593,8 +710,35 @@ export default function App() {
               equity += cashDrawn + bondLiquidated;
               actualDca = cashDrawn + bondLiquidated;
 
-              cashEvents.push({amount: -cashDrawn, type: `Cash depleted transferring remaining for DCA`});
-              eqEvents.push({amount: actualDca, type: `Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})`});
+              if (actualDca > 0) {
+                eqEvents.push({amount: actualDca, type: `Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})`});
+              }
+
+              if (actualDca < dca) {
+                if (emergencyFund > 0) {
+                  if (actualDca === 0) {
+                    if (!emergencyFundAlerted) {
+                      localAlerts.push({
+                        month: nextM,
+                        type: 'EMERGENCY_FUND_LIMIT',
+                        message: `Cash reached Emergency Fund limit at Month ${nextM} — DCA paused`,
+                      });
+                      emergencyFundAlerted = true;
+                    }
+                    tempEvents.push(`⚠ Emergency Fund Limit Reached: Cash is at or below the emergency fund floor of ${formatMoney(emergencyFund)}. DCA transfer of ${formatMoney(dca)} was skipped to protect your emergency reserve.`);
+                  } else {
+                    if (!emergencyFundAlerted) {
+                      localAlerts.push({
+                        month: nextM,
+                        type: 'EMERGENCY_FUND_LIMIT',
+                        message: `Cash approaching Emergency Fund limit at Month ${nextM} — DCA is partially constrained`,
+                      });
+                      emergencyFundAlerted = true;
+                    }
+                    tempEvents.push(`⚠ Emergency Fund Limit: Only ${formatMoney(availableCash)} available above emergency fund floor (${formatMoney(emergencyFund)}). Partial DCA of ${formatMoney(availableCash)} invested instead of requested ${formatMoney(dca)}.`);
+                  }
+                }
+              }
             }
           }
           yearlyDcaInvested += actualDca;
@@ -643,6 +787,9 @@ export default function App() {
     targetEquityRatio,
     dcaSchedule,
     postTargetStrategy,
+    minimumBondAmount,
+    bondWithdrawalSchedule,
+    emergencyFund,
   ]);
 
   const finalPoint = timeline[timeline.length - 1];
@@ -660,6 +807,17 @@ export default function App() {
 
   const removeScheduleSegment = (month: number) => {
     setDcaSchedule(dcaSchedule.filter((s) => s.startMonth !== month));
+  };
+
+  const addBondScheduleSegment = (month: number, amount: number) => {
+    if (month < 1) return;
+    if (bondWithdrawalSchedule.some((s) => s.startMonth === month)) return;
+    const newSchedule = [...bondWithdrawalSchedule, { startMonth: month, dcaAmount: amount }].sort((a, b) => a.startMonth - b.startMonth);
+    setBondWithdrawalSchedule(newSchedule);
+  };
+
+  const removeBondScheduleSegment = (month: number) => {
+    setBondWithdrawalSchedule(bondWithdrawalSchedule.filter((s) => s.startMonth !== month));
   };
 
   let targetStatusText = "Not Reached";
@@ -868,19 +1026,39 @@ export default function App() {
                 />
               </div>
 
+              <div className="input-field-wrapper">
+                <div className="input-label-row">
+                  <span className="input-label">Emergency Fund (Cash floor) (€)</span>
+                  <FormattedNumberInput value={emergencyFund} onChange={(v) => setEmergencyFund(Math.max(1000, v))} min={1000} max={1000000} />
+                </div>
+                <input
+                  type="range"
+                  min="1000"
+                  max="100000"
+                  step="1000"
+                  value={emergencyFund}
+                  onChange={(e) => setEmergencyFund(Math.max(1000, parseInt(e.target.value)))}
+                />
+              </div>
+
               <div className="input-field-wrapper" style={{ marginTop: '8px' }}>
                 <div className="input-label-row">
                   <span className="input-label">Post-Target Strategy</span>
                 </div>
                 <select
+                  id="post-target-strategy-select"
                   value={postTargetStrategy}
                   onChange={(e) => setPostTargetStrategy(e.target.value as typeof postTargetStrategy)}
                   className="post-target-select"
                 >
-                  <option value="HOLD_CASH">Hold Cash (100% Cash)</option>
-                  <option value="ALL_EQUITY">All Equity (100% Equity)</option>
-                  <option value="PROPORTIONAL_REBALANCE">Proportional Rebalance (Target ratio split)</option>
+                  <option value="ACCUMULATE_CASH">Accumulate Cash (savings build up in cash)</option>
+                  <option value="EQUITY_RATIO_GUARD">Equity Ratio Guard (route surplus to bonds or equity to keep ratio near target)</option>
                 </select>
+                {postTargetStrategy === 'EQUITY_RATIO_GUARD' && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Excess cash above the emergency fund floor is automatically deployed into <strong>bonds</strong> when equity ratio ≥ target, or into <strong>equity</strong> when ratio falls below target — keeping your allocation close to {targetEquityRatio}% without selling.
+                  </p>
+                )}
               </div>
 
               {/* DCA Schedule Editor */}
@@ -1004,7 +1182,81 @@ export default function App() {
                   onChange={(e) => setBondQuarterlyWithdrawal(parseInt(e.target.value))}
                 />
               </div>
-            </div>
+
+              {/* Minimum Bond Amount */}
+              <div className="input-field-wrapper" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px' }}>
+                <div className="input-label-row">
+                  <span className="input-label">Minimum Bond Amount (floor) (€)</span>
+                  <FormattedNumberInput value={minimumBondAmount} onChange={setMinimumBondAmount} min={0} max={10000000} />
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1000000"
+                  step="5000"
+                  value={minimumBondAmount}
+                  onChange={(e) => setMinimumBondAmount(parseInt(e.target.value))}
+                />
+                {minimumBondAmount > 0 && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Quarterly withdrawals will be capped to keep bonds above {Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(minimumBondAmount)}.
+                  </p>
+                )}
+              </div>
+
+              {/* Bond Withdrawal Schedule Editor */}
+              <div className="dca-schedule-editor" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px', marginTop: '4px' }}>
+                <span className="input-label" style={{ display: 'block', marginBottom: '8px' }}>Bond Quarterly Withdrawal Schedule</span>
+
+                <div className="schedule-segments-list">
+                  <div className="schedule-segment-item">
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Quarter 0 (Initial)</span>
+                    <strong style={{ fontSize: '12px' }}>{Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }).format(bondQuarterlyWithdrawal)} / qtr</strong>
+                  </div>
+                  {bondWithdrawalSchedule.map((seg) => (
+                    <div key={seg.startMonth} className="schedule-segment-item" style={{ borderLeft: '2px solid var(--bond-color)' }}>
+                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>From Month {seg.startMonth}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <strong style={{ fontSize: '12px' }}>{Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }).format(seg.dcaAmount)} / qtr</strong>
+                        <button onClick={() => removeBondScheduleSegment(seg.startMonth)} className="delete-btn">
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="add-segment-form">
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Start Month</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={newBondSegMonth}
+                      onChange={(e) => setNewBondSegMonth(parseInt(e.target.value) || 1)}
+                      className="add-segment-input"
+                    />
+                  </div>
+                  <div style={{ flex: 2 }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Withdrawal / Quarter (€)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={newBondSegAmount}
+                      onChange={(e) => setNewBondSegAmount(parseInt(e.target.value) || 0)}
+                      className="add-segment-input"
+                    />
+                  </div>
+                  <button
+                    onClick={() => addBondScheduleSegment(newBondSegMonth, newBondSegAmount)}
+                    className="add-segment-btn"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </div>
+              </div>
+
+          </div>
           </div>
 
           {/* German Tax Settings */}
@@ -1100,6 +1352,27 @@ export default function App() {
           {alerts.length > 0 && (
             <div className="alerts-warning-container" style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px' }}>
               {alerts.map((alert, idx) => {
+                if (alert.type === 'EMERGENCY_FUND_LIMIT') {
+                  const alertDate = new Date(2026, 5, 1);
+                  alertDate.setMonth(alertDate.getMonth() + alert.month);
+                  return (
+                    <div
+                      key={idx}
+                      className="glass-panel alert-warning-card"
+                      style={{ borderLeft: '4px solid #a855f7' }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#c084fc', fontWeight: 600 }}>
+                          <AlertTriangle size={18} />
+                          <span>⚠ Emergency Fund Limit Reached</span>
+                        </div>
+                        <p style={{ fontSize: '14px', margin: 0, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                          At <strong>{alertDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long' })}</strong> (Month {alert.month}, Age {(currentAge + alert.month / 12).toFixed(1)}), your cash balance has reached the emergency fund floor of <strong>{Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }).format(emergencyFund)}</strong>. DCA investments will be limited to only the cash surplus above this floor — your emergency reserve will never be touched.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
                 if (alert.type === 'CASH_DEPLETION') {
                   const targetDate = new Date(2026, 5, 1);
                   targetDate.setMonth(targetDate.getMonth() + alert.month);
@@ -1143,6 +1416,39 @@ export default function App() {
                         <AlertTriangle size={18} style={{ color: '#fb923c', flexShrink: 0 }} />
                         <div style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
                           <strong>Bond Liquidation Event:</strong> Bond principal liquidation begins at Month {alert.month} to support the DCA transition.
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+                if (alert.type === 'MINIMUM_BOND_LIMIT') {
+                  const alertDate = new Date(2026, 5, 1);
+                  alertDate.setMonth(alertDate.getMonth() + alert.month);
+                  return (
+                    <div
+                      key={idx}
+                      className="glass-panel alert-warning-card"
+                      style={{ borderLeft: '4px solid #f59e0b' }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#fbbf24', fontWeight: 600 }}>
+                          <AlertTriangle size={18} />
+                          <span>⚠ Minimum Bond Floor Reached</span>
+                        </div>
+                        <p style={{ fontSize: '14px', margin: 0, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                          At <strong>{alertDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long' })}</strong> (Month {alert.month}, Age {(currentAge + alert.month / 12).toFixed(1)}), quarterly bond withdrawals have been restricted because your bond balance has reached the minimum bond floor of <strong>{Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(minimumBondAmount)}</strong>. Only the coupon yield above this floor can be withdrawn going forward.
+                        </p>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', gap: '12px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                            Consider adding a Bond Withdrawal Schedule entry at Month {alert.month} to reduce your withdrawal amount.
+                          </span>
+                          <button
+                            className="apply-rec-btn"
+                            style={{ borderColor: 'rgba(245,158,11,0.3)', color: '#fbbf24' }}
+                            onClick={() => addBondScheduleSegment(alert.month, 0)}
+                          >
+                            Set to €0 from Month {alert.month}
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -1195,16 +1501,40 @@ export default function App() {
                     <ReferenceLine
                       key={idx}
                       x={currentAge + alert.month / 12}
-                      stroke={alert.type === 'CASH_DEPLETION' ? '#ef4444' : '#fb923c'}
+                      stroke={
+                        alert.type === 'CASH_DEPLETION' ? '#ef4444'
+                        : alert.type === 'EMERGENCY_FUND_LIMIT' ? '#a855f7'
+                        : alert.type === 'MINIMUM_BOND_LIMIT' ? '#f59e0b'
+                        : '#fb923c'
+                      }
                       strokeDasharray="4 4"
                       label={{
-                        value: alert.type === 'CASH_DEPLETION' ? 'Cash Depleted' : 'Bonds Liquidated',
-                        fill: alert.type === 'CASH_DEPLETION' ? '#f87171' : '#fb923c',
+                        value: alert.type === 'CASH_DEPLETION' ? 'Cash Depleted'
+                          : alert.type === 'EMERGENCY_FUND_LIMIT' ? 'Emergency Fund Limit'
+                          : alert.type === 'MINIMUM_BOND_LIMIT' ? 'Bond Floor Reached'
+                          : 'Bonds Liquidated',
+                        fill: alert.type === 'CASH_DEPLETION' ? '#f87171'
+                          : alert.type === 'EMERGENCY_FUND_LIMIT' ? '#c084fc'
+                          : alert.type === 'MINIMUM_BOND_LIMIT' ? '#fbbf24'
+                          : '#fb923c',
                         fontSize: 10,
                         position: 'top'
                       }}
                     />
                   ))}
+                  {monthsToTarget >= 0 && (
+                    <ReferenceLine
+                      x={currentAge + monthsToTarget / 12}
+                      stroke="var(--accent-primary)"
+                      strokeDasharray="4 4"
+                      label={{
+                        value: 'Target Equity Ratio Reached',
+                        fill: 'var(--accent-primary)',
+                        fontSize: 10,
+                        position: 'insideTopLeft'
+                      }}
+                    />
+                  )}
                   <Area
                     type="monotone"
                     dataKey="cashBalance"

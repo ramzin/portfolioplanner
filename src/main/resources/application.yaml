@@ -15,9 +15,9 @@ simulation:
   defaults:
     current-age: 34
     retirement-age: 60
-    initial-net-worth: 1500000.00
-    monthly-salary: 8500.00
-    monthly-expenses: 3500.00
+    initial-net-worth: 647000.00
+    monthly-salary: 4500.00
+    monthly-expenses: 2500.00
     allocation:
       equity-percentage: 39.0
       bond-percentage: 40.0
@@ -28,7 +28,9 @@ simulation:
     abgeltungsteuer-percent: 26.375
     sparerpauschbetrag: 1000.00
     basiszins-percent: 2.29
-    bond-quarterly-withdrawal: 10000.00
+    bond-quarterly-withdrawal: 15000.00
     dca-monthly-amount: 6000.00
     target-equity-ratio-percent: 80.0
-    post-target-strategy: PROPORTIONAL_REBALANCE
+    post-target-strategy: ACCUMULATE_CASH
+    minimum-bond-amount: 100000.00
+    emergency-fund: 50000.00

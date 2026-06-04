@@ -17,15 +17,20 @@ data class DcaScheduleSegment(
     val dcaAmount: BigDecimal
 )
 
-enum class AlertType {
-    CASH_DEPLETION,
-    BOND_LIQUIDATION
+enum class PostTargetStrategy {
+    /** Savings accumulate in cash; no automatic deployment of excess. */
+    ACCUMULATE_CASH,
+    /** Routes excess cash (above emergency fund) into bonds when equity ratio ≥ target,
+     *  or into equity when ratio has dipped below target, keeping ratio close to target
+     *  without ever selling equity positions. */
+    EQUITY_RATIO_GUARD
 }
 
-enum class PostTargetStrategy {
-    PROPORTIONAL_REBALANCE,
-    HOLD_CASH,
-    ALL_EQUITY
+enum class AlertType {
+    CASH_DEPLETION,
+    BOND_LIQUIDATION,
+    EMERGENCY_FUND_LIMIT,
+    MINIMUM_BOND_LIMIT
 }
 
 data class SimulationAlert(
@@ -48,7 +53,10 @@ data class SimulationRequest(
     val dcaMonthlyAmount: BigDecimal = BigDecimal("0.00"),
     val targetEquityRatioPercent: BigDecimal = BigDecimal("100.00"),
     val dcaSchedule: List<DcaScheduleSegment>? = null,
-    val postTargetStrategy: PostTargetStrategy = PostTargetStrategy.HOLD_CASH
+    val postTargetStrategy: PostTargetStrategy = PostTargetStrategy.ACCUMULATE_CASH,
+    val minimumBondAmount: BigDecimal = BigDecimal.ZERO,
+    val bondWithdrawalSchedule: List<DcaScheduleSegment>? = null,
+    val emergencyFund: BigDecimal = BigDecimal.ZERO
 )
 
 data class LedgerEvent(

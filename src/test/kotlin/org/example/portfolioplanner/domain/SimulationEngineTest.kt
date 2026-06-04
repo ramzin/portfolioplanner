@@ -230,8 +230,8 @@ class SimulationEngineTest {
 
         // Month 19 (Jan 1, 2028) check:
         val m19 = response.timeline[19]
-        assertEquals(BigDecimal("117078.82"), m19.equityBalance)
-        assertEquals(BigDecimal("-7.51"), m19.cashBalance)
+        assertEquals(BigDecimal("117071.25"), m19.equityBalance)
+        assertEquals(BigDecimal("0.00"), m19.cashBalance)
         assertEquals(BigDecimal("7.51"), m19.taxPaidThisYear)
     }
 
@@ -453,16 +453,17 @@ class SimulationEngineTest {
         assertEquals(BigDecimal("20400.00"), m4.bondBalance)
         assertEquals(BigDecimal("0.00"), m4.cashBalance)
 
-        // Month 5: DCA 10k. Cash 0. Needed 10k. Bond becomes 10,400. Eq becomes 90k.
+        // Month 5: Target is reached! DCA = 0.
+        // Eq = 80k, Bond = 20,400.
         // Month 6:
-        //   - Coupon: 10,400 * 1% = 104.00.
+        //   - Coupon: 20,400 * 1% = 204.00.
         //     Withdrawal is €0 because target reached.
-        //     So Coupon 104.00 is fully reinvested in Bonds. Bond becomes 10,400 + 104 = 10,504.
-        //   - DCA 10k. Cash has 0. Needed 10k. Bond becomes 10,504 - 10,000 = 504.00.
-        //     Eq becomes 90k + 10k = 100k. Cash = 0.
+        //     So Coupon 204.00 is fully reinvested in Bonds. Bond becomes 20,400 + 204 = 20,604.
+        //   - DCA = 0.
+        //     Eq remains 80k. Cash = 0.
         val m6 = response.timeline[6]
-        assertEquals(BigDecimal("100000.00"), m6.equityBalance)
-        assertEquals(BigDecimal("504.00"), m6.bondBalance)
+        assertEquals(BigDecimal("80000.00"), m6.equityBalance)
+        assertEquals(BigDecimal("20604.00"), m6.bondBalance)
         assertEquals(BigDecimal("0.00"), m6.cashBalance)
     }
 
@@ -554,7 +555,7 @@ class SimulationEngineTest {
     }
 
     @Test
-    fun `test post-target strategy HOLD_CASH`() {
+    fun `test post-target strategy ACCUMULATE_CASH`() {
         val allocation = Allocation(
             equityPercentage = BigDecimal("80.0"), // 80k
             bondPercentage = BigDecimal("0.0"),
@@ -575,7 +576,7 @@ class SimulationEngineTest {
             bondQuarterlyWithdrawal = BigDecimal.ZERO,
             dcaMonthlyAmount = BigDecimal.ZERO,
             targetEquityRatioPercent = BigDecimal("80.00"),
-            postTargetStrategy = PostTargetStrategy.HOLD_CASH
+            postTargetStrategy = PostTargetStrategy.ACCUMULATE_CASH
         )
 
         val response = engine.simulate(request)
@@ -587,7 +588,7 @@ class SimulationEngineTest {
     }
 
     @Test
-    fun `test post-target strategy ALL_EQUITY`() {
+    fun `test post-target strategy EQUITY_RATIO_GUARD`() {
         val allocation = Allocation(
             equityPercentage = BigDecimal("80.0"), // 80k
             bondPercentage = BigDecimal("0.0"),
@@ -608,49 +609,16 @@ class SimulationEngineTest {
             bondQuarterlyWithdrawal = BigDecimal.ZERO,
             dcaMonthlyAmount = BigDecimal.ZERO,
             targetEquityRatioPercent = BigDecimal("80.00"),
-            postTargetStrategy = PostTargetStrategy.ALL_EQUITY
+            postTargetStrategy = PostTargetStrategy.EQUITY_RATIO_GUARD,
+            emergencyFund = BigDecimal("20000.00") // keep cash at 20k, excess (10k savings) to bonds/equity
         )
 
         val response = engine.simulate(request)
         val m1 = response.timeline[1]
-        // 100% of savings (10k) goes to Equity.
-        // Eq = 90k, Cash = 20k
+        // Since ratio is 80k / (80k + 30k) = 72.7% (which is < target 80%), excess cash (10k savings) is routed to equity.
+        // Eq = 90k, Cash = 20k, Bond = 0
         assertEquals(BigDecimal("90000.00"), m1.equityBalance)
         assertEquals(BigDecimal("20000.00"), m1.cashBalance)
-    }
-
-    @Test
-    fun `test post-target strategy PROPORTIONAL_REBALANCE`() {
-        val allocation = Allocation(
-            equityPercentage = BigDecimal("80.0"), // 80k
-            bondPercentage = BigDecimal("0.0"),
-            cashPercentage = BigDecimal("20.0"),   // 20k
-            equityYieldPercent = BigDecimal("0.0"),
-            bondYieldPercent = BigDecimal("0.0"),
-            cashYieldPercent = BigDecimal("0.0")
-        )
-
-        val request = SimulationRequest(
-            currentAge = 35,
-            retirementAge = 36,
-            initialNetWorth = BigDecimal("100000.00"),
-            monthlySalary = BigDecimal("10000.00"),
-            monthlyExpenses = BigDecimal("0.00"),
-            allocation = allocation,
-            abgeltungsteuerPercent = BigDecimal("0.00"),
-            bondQuarterlyWithdrawal = BigDecimal.ZERO,
-            dcaMonthlyAmount = BigDecimal.ZERO,
-            targetEquityRatioPercent = BigDecimal("80.00"),
-            postTargetStrategy = PostTargetStrategy.PROPORTIONAL_REBALANCE
-        )
-
-        val response = engine.simulate(request)
-        val m1 = response.timeline[1]
-        // Split using Target Equity Ratio (80%):
-        // 80% of 10k = 8k to Equity. 20% of 10k = 2k to Cash.
-        // Eq = 88k, Cash = 22k
-        assertEquals(BigDecimal("88000.00"), m1.equityBalance)
-        assertEquals(BigDecimal("22000.00"), m1.cashBalance)
     }
 
     @Test
@@ -673,7 +641,7 @@ class SimulationEngineTest {
             allocation = allocation,
             dcaMonthlyAmount = BigDecimal("5000.00"),
             targetEquityRatioPercent = BigDecimal("80.00"),
-            postTargetStrategy = PostTargetStrategy.PROPORTIONAL_REBALANCE
+            postTargetStrategy = PostTargetStrategy.ACCUMULATE_CASH
         )
 
         val response = engine.simulate(request)

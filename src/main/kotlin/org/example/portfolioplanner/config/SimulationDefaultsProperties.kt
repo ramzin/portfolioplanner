@@ -19,7 +19,9 @@ data class SimulationDefaultsProperties @ConstructorBinding constructor(
     val bondQuarterlyWithdrawal: BigDecimal,
     val dcaMonthlyAmount: BigDecimal,
     val targetEquityRatioPercent: BigDecimal,
-    val postTargetStrategy: PostTargetStrategy
+    val postTargetStrategy: PostTargetStrategy,
+    val minimumBondAmount: BigDecimal,
+    val emergencyFund: BigDecimal
 )
 
 data class AllocationDefaults(
