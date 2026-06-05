@@ -102,10 +102,10 @@ class SimulationEngineTest {
         // Month 12 check:
         val m12 = response.timeline[12]
         assertEquals(BigDecimal("53083.89"), m12.equityBalance)
-        assertEquals(BigDecimal("31218.12"), m12.bondBalance)
-        assertEquals(BigDecimal("20542.69"), m12.cashBalance)
-        assertEquals(BigDecimal("104844.70"), m12.netWorth)
-        // Equity Ratio = 53083.89 / 104844.70 = 50.63%
+        assertEquals(BigDecimal("30000.00"), m12.bondBalance)
+        assertEquals(BigDecimal("21757.29"), m12.cashBalance)
+        assertEquals(BigDecimal("104841.18"), m12.netWorth)
+        // Equity Ratio = 53083.89 / 104841.18 = 50.63%
         assertEquals(BigDecimal("50.63"), m12.equityRatioPercent)
     }
 
@@ -320,15 +320,14 @@ class SimulationEngineTest {
         val response = engine.simulate(request)
 
         // Month 3:
-        // Coupon = 3,000. Matured: 100,000.
+        // Coupon = 3,000.
         // Withdrawal = 2,000. Since 2,000 < 3,000:
-        // Cash gets: 2,000.
-        // Bonds gets excess coupon: 3,000 - 2,000 = 1,000.
-        // Matured bonds are fully reinvested (100,000).
-        // New Bonds = 300,000 + 1,000 = 301,000.
+        // Cash gets coupon (3,000).
+        // No principal withdrawal from bonds is needed.
+        // New Bonds = 300,000.00.
         val m3 = response.timeline[3]
-        assertEquals(BigDecimal("301000.00"), m3.bondBalance)
-        assertEquals(BigDecimal("2000.00"), m3.cashBalance)
+        assertEquals(BigDecimal("300000.00"), m3.bondBalance)
+        assertEquals(BigDecimal("3000.00"), m3.cashBalance)
         assertEquals(BigDecimal("303000.00"), m3.netWorth)
     }
 
@@ -444,7 +443,8 @@ class SimulationEngineTest {
         //   Since ratio >= 70% at end of Month 4, monthsToTarget is set to 4, and future bond withdrawals drop to 0!
         // Month 6 (second quarterly coupon/maturity):
         //   Since target equity ratio was achieved in Month 4, withdrawals drop to 0! w = 0.
-        //   Coupon should be 100% reinvested.
+        //   Coupon goes to cash (since target reached), cash becomes 204.00.
+        //   Since post-target strategy is ACCUMULATE_CASH, no DCA runs, so coupon accumulates in cash.
         
         assertEquals(4, response.monthsToTarget)
 
@@ -453,18 +453,10 @@ class SimulationEngineTest {
         assertEquals(BigDecimal("20400.00"), m4.bondBalance)
         assertEquals(BigDecimal("0.00"), m4.cashBalance)
 
-        // Month 5: Target is reached! DCA = 0.
-        // Eq = 80k, Bond = 20,400.
-        // Month 6:
-        //   - Coupon: 20,400 * 1% = 204.00.
-        //     Withdrawal is €0 because target reached.
-        //     So Coupon 204.00 is fully reinvested in Bonds. Bond becomes 20,400 + 204 = 20,604.
-        //   - DCA = 0.
-        //     Eq remains 80k. Cash = 0.
         val m6 = response.timeline[6]
         assertEquals(BigDecimal("80000.00"), m6.equityBalance)
-        assertEquals(BigDecimal("20604.00"), m6.bondBalance)
-        assertEquals(BigDecimal("0.00"), m6.cashBalance)
+        assertEquals(BigDecimal("20400.00"), m6.bondBalance)
+        assertEquals(BigDecimal("204.00"), m6.cashBalance)
     }
 
     @Test
@@ -588,7 +580,7 @@ class SimulationEngineTest {
     }
 
     @Test
-    fun `test post-target strategy EQUITY_RATIO_GUARD`() {
+    fun `test post-target strategy INVEST_EQUITY`() {
         val allocation = Allocation(
             equityPercentage = BigDecimal("80.0"), // 80k
             bondPercentage = BigDecimal("0.0"),
@@ -607,18 +599,53 @@ class SimulationEngineTest {
             allocation = allocation,
             abgeltungsteuerPercent = BigDecimal("0.00"),
             bondQuarterlyWithdrawal = BigDecimal.ZERO,
-            dcaMonthlyAmount = BigDecimal.ZERO,
+            dcaMonthlyAmount = BigDecimal("10000.00"),
             targetEquityRatioPercent = BigDecimal("80.00"),
-            postTargetStrategy = PostTargetStrategy.EQUITY_RATIO_GUARD,
-            emergencyFund = BigDecimal("20000.00") // keep cash at 20k, excess (10k savings) to bonds/equity
+            postTargetStrategy = PostTargetStrategy.INVEST_EQUITY,
+            emergencyFund = BigDecimal("20000.00") // keep cash at 20k, excess (10k savings) to equity via DCA
         )
 
         val response = engine.simulate(request)
         val m1 = response.timeline[1]
-        // Since ratio is 80k / (80k + 30k) = 72.7% (which is < target 80%), excess cash (10k savings) is routed to equity.
+        // Since strategy is INVEST_EQUITY and savings is 10k, Cash becomes 30k, 10k (dca) goes to equity.
         // Eq = 90k, Cash = 20k, Bond = 0
         assertEquals(BigDecimal("90000.00"), m1.equityBalance)
         assertEquals(BigDecimal("20000.00"), m1.cashBalance)
+    }
+
+    @Test
+    fun `test post-target strategy INVEST_BONDS`() {
+        val allocation = Allocation(
+            equityPercentage = BigDecimal("80.0"), // 80k
+            bondPercentage = BigDecimal("0.0"),
+            cashPercentage = BigDecimal("20.0"),   // 20k
+            equityYieldPercent = BigDecimal("0.0"),
+            bondYieldPercent = BigDecimal("0.0"),
+            cashYieldPercent = BigDecimal("0.0")
+        )
+
+        val request = SimulationRequest(
+            currentAge = 35,
+            retirementAge = 36,
+            initialNetWorth = BigDecimal("100000.00"),
+            monthlySalary = BigDecimal("10000.00"),
+            monthlyExpenses = BigDecimal("0.00"),
+            allocation = allocation,
+            abgeltungsteuerPercent = BigDecimal("0.00"),
+            bondQuarterlyWithdrawal = BigDecimal.ZERO,
+            dcaMonthlyAmount = BigDecimal("10000.00"),
+            targetEquityRatioPercent = BigDecimal("80.00"),
+            postTargetStrategy = PostTargetStrategy.INVEST_BONDS,
+            emergencyFund = BigDecimal("20000.00") // keep cash at 20k, excess (10k savings) to bonds via DCA
+        )
+
+        val response = engine.simulate(request)
+        val m1 = response.timeline[1]
+        // Since strategy is INVEST_BONDS and savings is 10k, Cash becomes 30k, 10k (dca) goes to bonds.
+        // Eq = 80k, Cash = 20k, Bond = 10k
+        assertEquals(BigDecimal("80000.00"), m1.equityBalance)
+        assertEquals(BigDecimal("20000.00"), m1.cashBalance)
+        assertEquals(BigDecimal("10000.00"), m1.bondBalance)
     }
 
     @Test
@@ -658,5 +685,42 @@ class SimulationEngineTest {
         val m1 = response.timeline[1]
         kotlin.test.assertTrue(m1.equityEvents.any { it.type.contains("yield", ignoreCase = true) || it.type.contains("DCA", ignoreCase = true) })
         kotlin.test.assertTrue(m1.cashEvents.any { it.type.contains("interest", ignoreCase = true) || it.type.contains("savings", ignoreCase = true) })
+    }
+
+    @Test
+    fun `test post-target DCA and emergency fund limit alert`() {
+        val allocation = Allocation(
+            equityPercentage = BigDecimal("80.0"), // 80k
+            bondPercentage = BigDecimal("0.0"),
+            cashPercentage = BigDecimal("20.0"),   // 20k
+            equityYieldPercent = BigDecimal("0.0"),
+            bondYieldPercent = BigDecimal("0.0"),
+            cashYieldPercent = BigDecimal("0.0")
+        )
+
+        val request = SimulationRequest(
+            currentAge = 35,
+            retirementAge = 36,
+            initialNetWorth = BigDecimal("100000.00"),
+            monthlySalary = BigDecimal("5000.00"),
+            monthlyExpenses = BigDecimal("5000.00"),
+            allocation = allocation,
+            abgeltungsteuerPercent = BigDecimal("0.00"),
+            bondQuarterlyWithdrawal = BigDecimal.ZERO,
+            dcaMonthlyAmount = BigDecimal("2000.00"),
+            targetEquityRatioPercent = BigDecimal("80.00"),
+            postTargetStrategy = PostTargetStrategy.INVEST_EQUITY,
+            emergencyFund = BigDecimal("19000.00")
+        )
+
+        val response = engine.simulate(request)
+        val m1 = response.timeline[1]
+        assertEquals(BigDecimal("81000.00"), m1.equityBalance)
+        assertEquals(BigDecimal("19000.00"), m1.cashBalance)
+        
+        val alerts = response.alerts
+        assertEquals(1, alerts.size)
+        assertEquals(AlertType.EMERGENCY_FUND_LIMIT, alerts[0].type)
+        assertEquals(1, alerts[0].month)
     }
 }

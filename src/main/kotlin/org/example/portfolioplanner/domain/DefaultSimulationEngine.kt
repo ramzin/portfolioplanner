@@ -206,50 +206,49 @@ class DefaultSimulationEngine : SimulationEngine {
                     }
                 }
 
-                // Add coupon to bond balance first
-                bond = bond.add(coupon)
-                if (coupon.compareTo(BigDecimal.ZERO) > 0) {
-                    bondEvents.add(LedgerEvent(coupon, "Earned quarterly bond coupon"))
+                // Add coupon to bond (pre-target) or cash (post-target)
+                val isBondsAccumulation = targetReached && request.postTargetStrategy == PostTargetStrategy.INVEST_BONDS
+                if (isBondsAccumulation) {
+                    // Reinvested directly in bonds: coupon is never sent to cash, but gets reinvested in the bonds
+                    bond = bond.add(coupon)
+                    if (coupon.compareTo(BigDecimal.ZERO) > 0) {
+                        bondEvents.add(LedgerEvent(coupon, "Earned quarterly bond coupon (reinvested)"))
+                    }
+                } else {
+                    // Coupon is added and was subtracted in the bonds section:
+                    if (coupon.compareTo(BigDecimal.ZERO) > 0) {
+                        bondEvents.add(LedgerEvent(coupon, "Earned quarterly bond coupon"))
+                        bondEvents.add(LedgerEvent(coupon.negate(), "Coupon payout to Cash"))
+                    }
+                    // In the cash section the user can see that the coupon was added:
+                    cash = cash.add(coupon)
+                    if (coupon.compareTo(BigDecimal.ZERO) > 0) {
+                        cashEvents.add(LedgerEvent(coupon, "Received quarterly bond coupon"))
+                    }
                 }
 
-                 if (couponTax.compareTo(BigDecimal.ZERO) > 0) {
-                     val cashDrawn = couponTax.min(cash)
-                     cash = cash.subtract(cashDrawn)
-                     if (cashDrawn.compareTo(BigDecimal.ZERO) > 0) {
-                         cashEvents.add(LedgerEvent(cashDrawn.negate(), "Paid Abgeltungsteuer on bond coupon from Cash"))
-                     }
+                // Coupon tax is always paid from the cash pile
+                if (couponTax.compareTo(BigDecimal.ZERO) > 0) {
+                    cash = cash.subtract(couponTax)
+                    cashEvents.add(LedgerEvent(couponTax.negate(), "Paid Abgeltungsteuer on bond coupon"))
+                }
 
-                     val remainingTax = couponTax.subtract(cashDrawn)
-                     if (remainingTax.compareTo(BigDecimal.ZERO) > 0) {
-                         val bondLiquidated = remainingTax.min(bond)
-                         bond = bond.subtract(bondLiquidated)
-                         if (bondLiquidated.compareTo(BigDecimal.ZERO) > 0) {
-                             bondEvents.add(LedgerEvent(bondLiquidated.negate(), "Liquidated bond principal to pay coupon tax"))
-                         }
-
-                         val remainingAfterBond = remainingTax.subtract(bondLiquidated)
-                         if (remainingAfterBond.compareTo(BigDecimal.ZERO) > 0) {
-                             val equityLiquidated = remainingAfterBond.min(equity)
-                             equity = equity.subtract(equityLiquidated)
-                             if (equityLiquidated.compareTo(BigDecimal.ZERO) > 0) {
-                                 eqEvents.add(LedgerEvent(equityLiquidated.negate(), "Liquidated Equity to pay remaining coupon tax"))
-                             }
-                         }
-                     }
-                 }
+                // Determine requested principal withdrawal from bonds:
+                // Since the coupon is paid to Cash, we only need to withdraw principal if the requested withdrawal exceeds the coupon.
+                val principalWithdrawalNeeded = (requestedWithdrawal.subtract(coupon)).max(BigDecimal.ZERO)
 
                 // Apply minimum bond floor — actual withdrawal may be less than requested
                 val availableForWithdrawal = (bond.subtract(request.minimumBondAmount)).max(BigDecimal.ZERO)
-                val actualWithdrawal = requestedWithdrawal.min(availableForWithdrawal)
+                val actualWithdrawal = principalWithdrawalNeeded.min(availableForWithdrawal)
 
-                if (requestedWithdrawal.compareTo(BigDecimal.ZERO) > 0 &&
-                    actualWithdrawal.compareTo(requestedWithdrawal) < 0) {
+                if (principalWithdrawalNeeded.compareTo(BigDecimal.ZERO) > 0 &&
+                    actualWithdrawal.compareTo(principalWithdrawalNeeded) < 0) {
                     if (!minimumBondAlerted) {
                         alerts.add(SimulationAlert(m, AlertType.MINIMUM_BOND_LIMIT,
                             "Minimum bond floor reached at Month $m — quarterly withdrawal restricted to protect ${formatMoney(request.minimumBondAmount)} floor"))
                         minimumBondAlerted = true
                     }
-                    mEvents.add("⚠ Minimum Bond Floor: Requested quarterly withdrawal of ${formatMoney(requestedWithdrawal)} restricted to ${formatMoney(actualWithdrawal)} to maintain the minimum bond balance of ${formatMoney(request.minimumBondAmount)}.")
+                    mEvents.add("⚠ Minimum Bond Floor: Requested quarterly principal withdrawal of ${formatMoney(principalWithdrawalNeeded)} restricted to ${formatMoney(actualWithdrawal)} to maintain the minimum bond balance of ${formatMoney(request.minimumBondAmount)}.")
                 }
 
                 bondQuarterlyCashInflow = actualWithdrawal
@@ -287,91 +286,116 @@ class DefaultSimulationEngine : SimulationEngine {
             }
 
             var actualDca = BigDecimal.ZERO
-            if (dca.compareTo(BigDecimal.ZERO) > 0 && !targetReached) {
+            if (dca.compareTo(BigDecimal.ZERO) > 0) {
                 val availableCash = (cash.subtract(request.emergencyFund)).max(BigDecimal.ZERO)
-                if (availableCash.compareTo(dca) >= 0) {
-                    cash = cash.subtract(dca)
-                    equity = equity.add(dca)
-                    actualDca = dca
+                if (targetReached) {
+                    // Post-target: DCA transition from Cash based on strategy, no bond liquidation
+                    if (request.postTargetStrategy == PostTargetStrategy.INVEST_EQUITY || request.postTargetStrategy == PostTargetStrategy.INVEST_BONDS) {
+                        val destination = request.postTargetStrategy
+                        if (availableCash.compareTo(dca) >= 0) {
+                            cash = cash.subtract(dca)
+                            actualDca = dca
+                            cashEvents.add(LedgerEvent(dca.negate(), "Deducted programmatic DCA transition"))
 
-                    cashEvents.add(LedgerEvent(dca.negate(), "Deducted programmatic DCA transition to Equity"))
-                    eqEvents.add(LedgerEvent(dca, "Received programmatic DCA transition"))
-                } else {
-                    val cashDrawn = availableCash
-                    cash = cash.subtract(cashDrawn)
-                    if (cashDrawn.compareTo(BigDecimal.ZERO) > 0) {
-                        cashEvents.add(LedgerEvent(cashDrawn.negate(), "Deducted Cash surplus above emergency fund for DCA"))
-                    }
-
-                    val remainingNeeded = dca.subtract(cashDrawn)
-
-                    if (!cashDepletionAlerted) {
-                        alerts.add(SimulationAlert(m, AlertType.CASH_DEPLETION, "Cash depleted at Month $m"))
-                        cashDepletionAlerted = true
-                    }
-                    mEvents.add("DCA Step-down Event: Cash reserves depleted. DCA transfer of ${formatMoney(dca)} funded via bond liquidations.")
-
-                    val bondLiquidated = remainingNeeded.min(bond)
-                    if (bondLiquidated.compareTo(BigDecimal.ZERO) > 0) {
-                        if (!bondLiquidationAlerted) {
-                            alerts.add(SimulationAlert(m, AlertType.BOND_LIQUIDATION, "Bond liquidation started at Month $m"))
-                            bondLiquidationAlerted = true
-                        }
-                        bondEvents.add(LedgerEvent(bondLiquidated.negate(), "Liquidated principal to support DCA transition"))
-                    }
-
-                    bond = bond.subtract(bondLiquidated)
-                    equity = equity.add(cashDrawn).add(bondLiquidated)
-                    actualDca = cashDrawn.add(bondLiquidated)
-
-                    if (actualDca.compareTo(BigDecimal.ZERO) > 0) {
-                        eqEvents.add(LedgerEvent(actualDca, "Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})"))
-                    }
-
-                    if (actualDca.compareTo(dca) < 0) {
-                        if (request.emergencyFund.compareTo(BigDecimal.ZERO) > 0) {
-                            if (actualDca.compareTo(BigDecimal.ZERO) == 0) {
-                                if (!emergencyFundAlerted) {
-                                    alerts.add(SimulationAlert(m, AlertType.EMERGENCY_FUND_LIMIT,
-                                        "Cash reached Emergency Fund limit at Month $m — DCA paused to protect emergency reserve"))
-                                    emergencyFundAlerted = true
-                                }
-                                mEvents.add("⚠ Emergency Fund Limit Reached: Cash is at or below the emergency fund floor of ${formatMoney(request.emergencyFund)}. DCA transfer of ${formatMoney(dca)} was skipped to protect your emergency reserve. Only surplus cash above the emergency fund will be invested.")
+                            if (destination == PostTargetStrategy.INVEST_EQUITY) {
+                                equity = equity.add(dca)
+                                eqEvents.add(LedgerEvent(dca, "Received programmatic DCA transition to Equity"))
+                                yearlyDcaInvested = yearlyDcaInvested.add(dca)
                             } else {
-                                if (!emergencyFundAlerted) {
-                                    alerts.add(SimulationAlert(m, AlertType.EMERGENCY_FUND_LIMIT,
-                                        "Cash approaching Emergency Fund limit at Month $m — DCA is partially constrained"))
-                                    emergencyFundAlerted = true
+                                bond = bond.add(dca)
+                                bondEvents.add(LedgerEvent(dca, "Received programmatic DCA transition to Bonds"))
+                            }
+                        } else {
+                            val cashDrawn = availableCash
+                            cash = cash.subtract(cashDrawn)
+                            actualDca = cashDrawn
+
+                            if (cashDrawn.compareTo(BigDecimal.ZERO) > 0) {
+                                cashEvents.add(LedgerEvent(cashDrawn.negate(), "Deducted Cash surplus above emergency fund for DCA"))
+                                if (destination == PostTargetStrategy.INVEST_EQUITY) {
+                                    equity = equity.add(cashDrawn)
+                                    eqEvents.add(LedgerEvent(cashDrawn, "Received partial DCA transition to Equity"))
+                                    yearlyDcaInvested = yearlyDcaInvested.add(cashDrawn)
+                                } else {
+                                    bond = bond.add(cashDrawn)
+                                    bondEvents.add(LedgerEvent(cashDrawn, "Received partial DCA transition to Bonds"))
                                 }
+                            }
+
+                            if (!emergencyFundAlerted) {
+                                alerts.add(SimulationAlert(m, AlertType.EMERGENCY_FUND_LIMIT,
+                                    "Cash reached Emergency Fund limit at Month $m — DCA paused to protect emergency reserve"))
+                                emergencyFundAlerted = true
+                            }
+                            if (cashDrawn.compareTo(BigDecimal.ZERO) == 0) {
+                                mEvents.add("⚠ Emergency Fund Limit Reached: Cash is at or below the emergency fund floor of ${formatMoney(request.emergencyFund)}. DCA transfer of ${formatMoney(dca)} was skipped to protect your emergency reserve.")
+                            } else {
                                 mEvents.add("⚠ Emergency Fund Limit: Only ${formatMoney(availableCash)} available above emergency fund floor (${formatMoney(request.emergencyFund)}). Partial DCA of ${formatMoney(availableCash)} invested instead of requested ${formatMoney(dca)}.")
                             }
                         }
                     }
-                }
-            }
-            yearlyDcaInvested = yearlyDcaInvested.add(actualDca)
+                } else {
+                    // Pre-target: DCA from Cash, fallback to bond liquidation (always to equity)
+                    if (availableCash.compareTo(dca) >= 0) {
+                        cash = cash.subtract(dca)
+                        equity = equity.add(dca)
+                        actualDca = dca
+                        yearlyDcaInvested = yearlyDcaInvested.add(dca)
 
-            // Post-target Equity Ratio Guard: route remaining excess cash based on current equity ratio
-            if (targetReached && request.postTargetStrategy == PostTargetStrategy.EQUITY_RATIO_GUARD) {
-                val excessCash = (cash.subtract(request.emergencyFund)).max(BigDecimal.ZERO)
-                if (excessCash.compareTo(BigDecimal.ZERO) > 0) {
-                    val nwForRatio = equity.add(bond).add(cash)
-                    val ratioNow = if (nwForRatio.compareTo(BigDecimal.ZERO) == 0) BigDecimal.ZERO
-                    else equity.multiply(hundred).divide(nwForRatio, 8, RoundingMode.HALF_UP)
-
-                    if (ratioNow.compareTo(request.targetEquityRatioPercent) >= 0) {
-                        // At or above target — park excess in bonds to avoid further equity inflation
-                        cash = cash.subtract(excessCash)
-                        bond = bond.add(excessCash)
-                        cashEvents.add(LedgerEvent(excessCash.negate(), "Invested excess cash into Bonds (Equity Ratio Guard: ratio ≥ target)"))
-                        bondEvents.add(LedgerEvent(excessCash, "Received cash surplus via Equity Ratio Guard"))
+                        cashEvents.add(LedgerEvent(dca.negate(), "Deducted programmatic DCA transition to Equity"))
+                        eqEvents.add(LedgerEvent(dca, "Received programmatic DCA transition"))
                     } else {
-                        // Below target — restore ratio by buying equity with excess cash
-                        cash = cash.subtract(excessCash)
-                        equity = equity.add(excessCash)
-                        yearlyDcaInvested = yearlyDcaInvested.add(excessCash)
-                        cashEvents.add(LedgerEvent(excessCash.negate(), "Invested excess cash into Equity (Equity Ratio Guard: ratio < target, restoring)"))
-                        eqEvents.add(LedgerEvent(excessCash, "Received cash surplus via Equity Ratio Guard (restoring target ratio)"))
+                        val cashDrawn = availableCash
+                        cash = cash.subtract(cashDrawn)
+                        if (cashDrawn.compareTo(BigDecimal.ZERO) > 0) {
+                            cashEvents.add(LedgerEvent(cashDrawn.negate(), "Deducted Cash surplus above emergency fund for DCA"))
+                        }
+
+                        val remainingNeeded = dca.subtract(cashDrawn)
+
+                        if (!cashDepletionAlerted) {
+                            alerts.add(SimulationAlert(m, AlertType.CASH_DEPLETION, "Cash depleted at Month $m"))
+                            cashDepletionAlerted = true
+                        }
+                        mEvents.add("DCA Step-down Event: Cash reserves depleted. DCA transfer of ${formatMoney(dca)} funded via bond liquidations.")
+
+                        val bondLiquidated = remainingNeeded.min(bond)
+                        if (bondLiquidated.compareTo(BigDecimal.ZERO) > 0) {
+                            if (!bondLiquidationAlerted) {
+                                alerts.add(SimulationAlert(m, AlertType.BOND_LIQUIDATION, "Bond liquidation started at Month $m"))
+                                bondLiquidationAlerted = true
+                            }
+                            bondEvents.add(LedgerEvent(bondLiquidated.negate(), "Liquidated principal to support DCA transition"))
+                        }
+
+                        bond = bond.subtract(bondLiquidated)
+                        equity = equity.add(cashDrawn).add(bondLiquidated)
+                        actualDca = cashDrawn.add(bondLiquidated)
+                        yearlyDcaInvested = yearlyDcaInvested.add(actualDca)
+
+                        if (actualDca.compareTo(BigDecimal.ZERO) > 0) {
+                            eqEvents.add(LedgerEvent(actualDca, "Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})"))
+                        }
+
+                        if (actualDca.compareTo(dca) < 0) {
+                            if (request.emergencyFund.compareTo(BigDecimal.ZERO) > 0) {
+                                if (actualDca.compareTo(BigDecimal.ZERO) == 0) {
+                                    if (!emergencyFundAlerted) {
+                                        alerts.add(SimulationAlert(m, AlertType.EMERGENCY_FUND_LIMIT,
+                                            "Cash reached Emergency Fund limit at Month $m — DCA paused to protect emergency reserve"))
+                                        emergencyFundAlerted = true
+                                    }
+                                    mEvents.add("⚠ Emergency Fund Limit Reached: Cash is at or below the emergency fund floor of ${formatMoney(request.emergencyFund)}. DCA transfer of ${formatMoney(dca)} was skipped to protect your emergency reserve. Only surplus cash above the emergency fund will be invested.")
+                                } else {
+                                    if (!emergencyFundAlerted) {
+                                        alerts.add(SimulationAlert(m, AlertType.EMERGENCY_FUND_LIMIT,
+                                            "Cash approaching Emergency Fund limit at Month $m — DCA is partially constrained"))
+                                        emergencyFundAlerted = true
+                                    }
+                                    mEvents.add("⚠ Emergency Fund Limit: Only ${formatMoney(availableCash)} available above emergency fund floor (${formatMoney(request.emergencyFund)}). Partial DCA of ${formatMoney(availableCash)} invested instead of requested ${formatMoney(dca)}.")
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -18,12 +18,9 @@ data class DcaScheduleSegment(
 )
 
 enum class PostTargetStrategy {
-    /** Savings accumulate in cash; no automatic deployment of excess. */
     ACCUMULATE_CASH,
-    /** Routes excess cash (above emergency fund) into bonds when equity ratio ≥ target,
-     *  or into equity when ratio has dipped below target, keeping ratio close to target
-     *  without ever selling equity positions. */
-    EQUITY_RATIO_GUARD
+    INVEST_EQUITY,
+    INVEST_BONDS
 }
 
 enum class AlertType {

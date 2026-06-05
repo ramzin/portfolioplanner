@@ -245,7 +245,7 @@ export default function App() {
   // DCA & Transition settings
   const [dcaMonthlyAmount, setDcaMonthlyAmount] = useState(6000);
   const [targetEquityRatio, setTargetEquityRatio] = useState(80);
-  const [postTargetStrategy, setPostTargetStrategy] = useState<'ACCUMULATE_CASH' | 'EQUITY_RATIO_GUARD'>('ACCUMULATE_CASH');
+  const [postTargetStrategy, setPostTargetStrategy] = useState<'ACCUMULATE_CASH' | 'INVEST_EQUITY' | 'INVEST_BONDS'>('ACCUMULATE_CASH');
   const [emergencyFund, setEmergencyFund] = useState(50000);
   const [minimumBondAmount, setMinimumBondAmount] = useState(100000);
 
@@ -570,44 +570,45 @@ export default function App() {
               if (active.startMonth >= 0) requestedWithdrawal = active.dcaAmount;
             }
 
-            // Add coupon to bond balance
-            bond += coupon;
-            if (coupon > 0) bondEvents.push({ amount: coupon, type: `Earned quarterly bond coupon` });
-
-            if (couponTax > 0) {
-              const cashDrawn = Math.min(couponTax, cash);
-              cash -= cashDrawn;
-              if (cashDrawn > 0) {
-                cashEvents.push({ amount: -cashDrawn, type: `Paid Abgeltungsteuer on bond coupon from Cash` });
+            // Add coupon to bond (pre-target) or cash (post-target)
+            const isBondsAccumulation = targetReached && postTargetStrategy === 'INVEST_BONDS';
+            if (isBondsAccumulation) {
+              // Reinvested directly in bonds: coupon is never sent to cash, but gets reinvested in the bonds
+              bond += coupon;
+              if (coupon > 0) {
+                bondEvents.push({ amount: coupon, type: `Earned quarterly bond coupon (reinvested)` });
               }
-
-              const remainingTax = couponTax - cashDrawn;
-              if (remainingTax > 0) {
-                const bondLiquidated = Math.min(remainingTax, bond);
-                bond -= bondLiquidated;
-                if (bondLiquidated > 0) {
-                  bondEvents.push({ amount: -bondLiquidated, type: `Liquidated bond principal to pay coupon tax` });
-                }
-
-                const remainingAfterBond = remainingTax - bondLiquidated;
-                if (remainingAfterBond > 0) {
-                  const equityLiquidated = Math.min(remainingAfterBond, equity);
-                  equity -= equityLiquidated;
-                  if (equityLiquidated > 0) {
-                    eqEvents.push({ amount: -equityLiquidated, type: `Liquidated Equity to pay remaining coupon tax` });
-                  }
-                }
+            } else {
+              // Coupon is added and was subtracted in the bonds section:
+              if (coupon > 0) {
+                bondEvents.push({ amount: coupon, type: `Earned quarterly bond coupon` });
+                bondEvents.push({ amount: -coupon, type: `Coupon payout to Cash` });
+              }
+              // In the cash section the user can see that the coupon was added:
+              cash += coupon;
+              if (coupon > 0) {
+                cashEvents.push({ amount: coupon, type: `Received quarterly bond coupon` });
               }
             }
 
+            // Coupon tax is always paid from the cash pile
+            if (couponTax > 0) {
+              cash -= couponTax;
+              cashEvents.push({ amount: -couponTax, type: `Paid Abgeltungsteuer on bond coupon` });
+            }
+
+            // Determine requested principal withdrawal from bonds:
+            // Since the coupon is paid to Cash, we only need to withdraw principal if the requested withdrawal exceeds the coupon.
+            const principalWithdrawalNeeded = Math.max(0, requestedWithdrawal - coupon);
+
             // Apply minimum bond floor
             const availableForWithdrawal = Math.max(0, bond - minimumBondAmount);
-            const w = Math.min(requestedWithdrawal, availableForWithdrawal);
+            const w = Math.min(principalWithdrawalNeeded, availableForWithdrawal);
 
-            if (requestedWithdrawal > 0 && w < requestedWithdrawal && !minimumBondAlerted) {
+            if (principalWithdrawalNeeded > 0 && w < principalWithdrawalNeeded && !minimumBondAlerted) {
               localAlerts.push({ month: nextM, type: 'MINIMUM_BOND_LIMIT', message: `Minimum bond floor reached at Month ${nextM}` });
               minimumBondAlerted = true;
-              tempEvents.push(`⚠ Minimum Bond Floor: Requested quarterly withdrawal of ${formatMoney(requestedWithdrawal)} restricted to ${formatMoney(w)} to maintain the minimum bond balance of ${formatMoney(minimumBondAmount)}.`);
+              tempEvents.push(`⚠ Minimum Bond Floor: Requested quarterly principal withdrawal of ${formatMoney(principalWithdrawalNeeded)} restricted to ${formatMoney(w)} to maintain the minimum bond balance of ${formatMoney(minimumBondAmount)}.`);
             }
 
             if (w > 0) {
@@ -620,36 +621,9 @@ export default function App() {
 
           const savings = monthlySalary - monthlyExpenses;
 
-          if (targetReached) {
-            // Cash compounds interest + bond coupon + savings — all accumulate in cash
-            cash += cashGrowth - cashTax + bondQuarterlyCashInflow + savings;
-            cashEvents.push({amount: savings, type: `Received monthly savings`});
-
-            // Post-target Equity Ratio Guard: deploy excess cash based on equity ratio
-            if (postTargetStrategy === 'EQUITY_RATIO_GUARD') {
-              const excessCash = Math.max(0, cash - emergencyFund);
-              if (excessCash > 0) {
-                const nw = equity + bond + cash;
-                const ratioNow = nw === 0 ? 0 : (equity / nw) * 100;
-                if (ratioNow >= targetEquityRatio) {
-                  // At/above target — park excess in bonds
-                  cash -= excessCash;
-                  bond += excessCash;
-                  cashEvents.push({ amount: -excessCash, type: `Invested excess cash into Bonds (Equity Ratio Guard: ratio ≥ target)` });
-                  bondEvents.push({ amount: excessCash, type: `Received cash surplus via Equity Ratio Guard` });
-                } else {
-                  // Below target — restore ratio by buying equity
-                  cash -= excessCash;
-                  equity += excessCash;
-                  yearlyDcaInvested += excessCash;
-                  cashEvents.push({ amount: -excessCash, type: `Invested excess cash into Equity (Equity Ratio Guard: ratio < target, restoring)` });
-                  eqEvents.push({ amount: excessCash, type: `Received cash surplus via Equity Ratio Guard (restoring target ratio)` });
-                }
-              }
-            }
-          } else {
-            // Pre-target: savings go to cash
-            cash += cashGrowth - cashTax + bondQuarterlyCashInflow + savings;
+          // Cash compounds interest + bond coupon + savings — all accumulate in cash first
+          cash += cashGrowth - cashTax + bondQuarterlyCashInflow + savings;
+          if (savings > 0) {
             cashEvents.push({amount: savings, type: `Received monthly savings`});
           }
 
@@ -665,83 +639,136 @@ export default function App() {
           }
 
           let actualDca = 0;
-          if (dca > 0 && !targetReached) {
+          if (dca > 0) {
             const availableCash = Math.max(0, cash - emergencyFund);
-            if (availableCash >= dca) {
-              cash -= dca;
-              equity += dca;
-              actualDca = dca;
+            if (targetReached) {
+              // Post-target: DCA transition based on strategy, no bond liquidation
+              if (postTargetStrategy === 'INVEST_EQUITY' || postTargetStrategy === 'INVEST_BONDS') {
+                const destination = postTargetStrategy;
+                if (availableCash >= dca) {
+                  cash -= dca;
+                  actualDca = dca;
+                  cashEvents.push({ amount: -dca, type: `Deducted programmatic DCA transition` });
 
-              cashEvents.push({amount: -dca, type: `Deducted programmatic DCA transition to Equity`});
-              eqEvents.push({amount: dca, type: `Received programmatic DCA transition`});
-            } else {
-              const cashDrawn = availableCash;
-              cash -= cashDrawn;
-              if (cashDrawn > 0) {
-                cashEvents.push({amount: -cashDrawn, type: `Deducted Cash surplus above emergency fund for DCA`});
-              }
+                  if (destination === 'INVEST_EQUITY') {
+                    equity += dca;
+                    eqEvents.push({ amount: dca, type: `Received programmatic DCA transition to Equity` });
+                    yearlyDcaInvested += dca;
+                  } else {
+                    bond += dca;
+                    bondEvents.push({ amount: dca, type: `Received programmatic DCA transition to Bonds` });
+                  }
+                } else {
+                  const cashDrawn = availableCash;
+                  cash -= cashDrawn;
+                  actualDca = cashDrawn;
 
-              const remainingNeeded = dca - cashDrawn;
-
-              if (!cashDepletionAlerted) {
-                localAlerts.push({
-                  month: nextM,
-                  type: 'CASH_DEPLETION',
-                  message: `Cash depleted at Month ${nextM}`,
-                });
-                cashDepletionAlerted = true;
-              }
-              tempEvents.push(`DCA Step-down Event: Cash reserves depleted. DCA transfer of ${formatMoney(dca)} funded via bond liquidations.`);
-
-              const bondLiquidated = Math.min(remainingNeeded, bond);
-              if (bondLiquidated > 0) {
-                if (!bondLiquidationAlerted) {
-                  localAlerts.push({
-                    month: nextM,
-                    type: 'BOND_LIQUIDATION',
-                    message: `Bond liquidation started at Month ${nextM}`,
-                  });
-                  bondLiquidationAlerted = true;
-                }
-                bondEvents.push({amount: -bondLiquidated, type: `Liquidated principal to support DCA transition`});
-              }
-
-              bond -= bondLiquidated;
-              equity += cashDrawn + bondLiquidated;
-              actualDca = cashDrawn + bondLiquidated;
-
-              if (actualDca > 0) {
-                eqEvents.push({amount: actualDca, type: `Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})`});
-              }
-
-              if (actualDca < dca) {
-                if (emergencyFund > 0) {
-                  if (actualDca === 0) {
-                    if (!emergencyFundAlerted) {
-                      localAlerts.push({
-                        month: nextM,
-                        type: 'EMERGENCY_FUND_LIMIT',
-                        message: `Cash reached Emergency Fund limit at Month ${nextM} — DCA paused`,
-                      });
-                      emergencyFundAlerted = true;
+                  if (cashDrawn > 0) {
+                    cashEvents.push({ amount: -cashDrawn, type: `Deducted Cash surplus above emergency fund for DCA` });
+                    if (destination === 'INVEST_EQUITY') {
+                      equity += cashDrawn;
+                      eqEvents.push({ amount: cashDrawn, type: `Received partial DCA transition to Equity` });
+                      yearlyDcaInvested += cashDrawn;
+                    } else {
+                      bond += cashDrawn;
+                      bondEvents.push({ amount: cashDrawn, type: `Received partial DCA transition to Bonds` });
                     }
+                  }
+
+                  if (!emergencyFundAlerted) {
+                    localAlerts.push({
+                      month: nextM,
+                      type: 'EMERGENCY_FUND_LIMIT',
+                      message: `Cash reached Emergency Fund limit at Month ${nextM} — DCA paused`,
+                    });
+                    emergencyFundAlerted = true;
+                  }
+                  if (cashDrawn === 0) {
                     tempEvents.push(`⚠ Emergency Fund Limit Reached: Cash is at or below the emergency fund floor of ${formatMoney(emergencyFund)}. DCA transfer of ${formatMoney(dca)} was skipped to protect your emergency reserve.`);
                   } else {
-                    if (!emergencyFundAlerted) {
-                      localAlerts.push({
-                        month: nextM,
-                        type: 'EMERGENCY_FUND_LIMIT',
-                        message: `Cash approaching Emergency Fund limit at Month ${nextM} — DCA is partially constrained`,
-                      });
-                      emergencyFundAlerted = true;
-                    }
                     tempEvents.push(`⚠ Emergency Fund Limit: Only ${formatMoney(availableCash)} available above emergency fund floor (${formatMoney(emergencyFund)}). Partial DCA of ${formatMoney(availableCash)} invested instead of requested ${formatMoney(dca)}.`);
+                  }
+                }
+              }
+            } else {
+              // Pre-target: DCA from Cash, fallback to bond liquidation (always to equity)
+              if (availableCash >= dca) {
+                cash -= dca;
+                equity += dca;
+                actualDca = dca;
+                yearlyDcaInvested += dca;
+
+                cashEvents.push({amount: -dca, type: `Deducted programmatic DCA transition to Equity`});
+                eqEvents.push({amount: dca, type: `Received programmatic DCA transition`});
+              } else {
+                const cashDrawn = availableCash;
+                cash -= cashDrawn;
+                if (cashDrawn > 0) {
+                  cashEvents.push({amount: -cashDrawn, type: `Deducted Cash surplus above emergency fund for DCA`});
+                }
+
+                const remainingNeeded = dca - cashDrawn;
+
+                if (!cashDepletionAlerted) {
+                  localAlerts.push({
+                    month: nextM,
+                    type: 'CASH_DEPLETION',
+                    message: `Cash depleted at Month ${nextM}`,
+                  });
+                  cashDepletionAlerted = true;
+                }
+                tempEvents.push(`DCA Step-down Event: Cash reserves depleted. DCA transfer of ${formatMoney(dca)} funded via bond liquidations.`);
+
+                const bondLiquidated = Math.min(remainingNeeded, bond);
+                if (bondLiquidated > 0) {
+                  if (!bondLiquidationAlerted) {
+                    localAlerts.push({
+                      month: nextM,
+                      type: 'BOND_LIQUIDATION',
+                      message: `Bond liquidation started at Month ${nextM}`,
+                    });
+                    bondLiquidationAlerted = true;
+                  }
+                  bondEvents.push({amount: -bondLiquidated, type: `Liquidated principal to support DCA transition`});
+                }
+
+                bond -= bondLiquidated;
+                equity += cashDrawn + bondLiquidated;
+                actualDca = cashDrawn + bondLiquidated;
+                yearlyDcaInvested += actualDca;
+
+                if (actualDca > 0) {
+                  eqEvents.push({amount: actualDca, type: `Received DCA transition (Cash: ${formatMoney(cashDrawn)}, Bonds: ${formatMoney(bondLiquidated)})`});
+                }
+
+                if (actualDca < dca) {
+                  if (emergencyFund > 0) {
+                    if (actualDca === 0) {
+                      if (!emergencyFundAlerted) {
+                        localAlerts.push({
+                          month: nextM,
+                          type: 'EMERGENCY_FUND_LIMIT',
+                          message: `Cash reached Emergency Fund limit at Month ${nextM} — DCA paused`,
+                        });
+                        emergencyFundAlerted = true;
+                      }
+                      tempEvents.push(`⚠ Emergency Fund Limit Reached: Cash is at or below the emergency fund floor of ${formatMoney(emergencyFund)}. DCA transfer of ${formatMoney(dca)} was skipped to protect your emergency reserve.`);
+                    } else {
+                      if (!emergencyFundAlerted) {
+                        localAlerts.push({
+                          month: nextM,
+                          type: 'EMERGENCY_FUND_LIMIT',
+                          message: `Cash approaching Emergency Fund limit at Month ${nextM} — DCA is partially constrained`,
+                        });
+                        emergencyFundAlerted = true;
+                      }
+                      tempEvents.push(`⚠ Emergency Fund Limit: Only ${formatMoney(availableCash)} available above emergency fund floor (${formatMoney(emergencyFund)}). Partial DCA of ${formatMoney(availableCash)} invested instead of requested ${formatMoney(dca)}.`);
+                    }
                   }
                 }
               }
             }
           }
-          yearlyDcaInvested += actualDca;
 
           // Check target ratio
           const nextNetWorth = equity + bond + cash;
@@ -1052,11 +1079,17 @@ export default function App() {
                   className="post-target-select"
                 >
                   <option value="ACCUMULATE_CASH">Accumulate Cash (savings build up in cash)</option>
-                  <option value="EQUITY_RATIO_GUARD">Equity Ratio Guard (route surplus to bonds or equity to keep ratio near target)</option>
+                  <option value="INVEST_EQUITY">Invest Equity (invest excess cash in equity)</option>
+                  <option value="INVEST_BONDS">Invest Bonds (invest excess cash in bonds)</option>
                 </select>
-                {postTargetStrategy === 'EQUITY_RATIO_GUARD' && (
+                {postTargetStrategy === 'INVEST_EQUITY' && (
                   <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
-                    Excess cash above the emergency fund floor is automatically deployed into <strong>bonds</strong> when equity ratio ≥ target, or into <strong>equity</strong> when ratio falls below target — keeping your allocation close to {targetEquityRatio}% without selling.
+                    Excess cash above the emergency fund floor is automatically invested in <strong>equity</strong>.
+                  </p>
+                )}
+                {postTargetStrategy === 'INVEST_BONDS' && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Excess cash above the emergency fund floor is automatically invested in <strong>bonds</strong>.
                   </p>
                 )}
               </div>
