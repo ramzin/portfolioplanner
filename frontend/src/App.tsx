@@ -862,7 +862,6 @@ export default function App() {
       <header className="app-header">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <span className="app-brand">Antigravity Suite</span>
             <h1 className="app-title">Wealth Accumulation & Asset Transition</h1>
           </div>
           <div
@@ -1658,7 +1657,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="log-scroll-container" style={{ maxHeight: '400px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>
+            <div className="log-scroll-container" style={{ maxHeight: '650px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>
               {timeline.filter(pt => {
                 if (!logSearchQuery) return true;
                 const query = logSearchQuery.toLowerCase();
