@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine } from 'recharts';
 import { TrendingUp, Award, DollarSign, AlertTriangle, Plus, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { usePercentageAllocation } from './hooks/usePercentageAllocation';
@@ -284,6 +284,32 @@ export default function App() {
   const [newSegAmount, setNewSegAmount] = useState(2000);
   const [backendStatus, setBackendStatus] = useState<'CONNECTED' | 'OFFLINE'>('OFFLINE');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const [showEvents, setShowEvents] = useState(true);
+  const [showMillionMarks, setShowMillionMarks] = useState(true);
+
+  // Compute milestones when a new million is reached
+  const millionMarks = useMemo(() => {
+    const marks: Array<{ age: number; value: string; netWorth: number }> = [];
+    if (timeline.length === 0) return marks;
+
+    let lastMil = Math.floor(timeline[0].netWorth / 1000000);
+
+    for (let i = 1; i < timeline.length; i++) {
+      const currentMil = Math.floor(timeline[i].netWorth / 1000000);
+      if (currentMil > lastMil) {
+        for (let m = lastMil + 1; m <= currentMil; m++) {
+          marks.push({
+            age: timeline[i].age,
+            value: `€${m}M`,
+            netWorth: m * 1000000
+          });
+        }
+        lastMil = currentMil;
+      }
+    }
+    return marks;
+  }, [timeline]);
 
   // Load configuration defaults from backend on mount
   useEffect(() => {
@@ -1462,8 +1488,8 @@ export default function App() {
             </div>
           </div>
 
-          {/* Alerts Warning Cards */}
-          {alerts.length > 0 && (
+          {/* Alerts Warning Cards - Hidden as per user request */}
+          {false && alerts.length > 0 && (
             <div className="alerts-warning-container" style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px' }}>
               {alerts.map((alert, idx) => {
                 if (alert.type === 'EMERGENCY_FUND_LIMIT') {
@@ -1575,20 +1601,44 @@ export default function App() {
 
           {/* Area Chart Card */}
           <div className="glass-panel chart-card">
-            <div className="chart-header">
-              <h3 className="chart-title">Net Worth Evolution (Absolute Balances)</h3>
-              <div className="chart-legend">
-                <div className="legend-item">
-                  <span className="legend-color equity"></span>
-                  <span>Equity</span>
+            <div className="chart-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+              <h3 className="chart-title" style={{ margin: 0 }}>Net Worth Evolution (Absolute Balances)</h3>
+              
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                <div className="toggle-switch-container">
+                  <label className="toggle-switch-label">
+                    <input
+                      type="checkbox"
+                      checked={showEvents}
+                      onChange={(e) => setShowEvents(e.target.checked)}
+                    />
+                    <span className="toggle-switch-slider"></span>
+                    <span>Show Events</span>
+                  </label>
+                  <label className="toggle-switch-label">
+                    <input
+                      type="checkbox"
+                      checked={showMillionMarks}
+                      onChange={(e) => setShowMillionMarks(e.target.checked)}
+                    />
+                    <span className="toggle-switch-slider"></span>
+                    <span>Show Milestones</span>
+                  </label>
                 </div>
-                <div className="legend-item">
-                  <span className="legend-color bond"></span>
-                  <span>Bonds</span>
-                </div>
-                <div className="legend-item">
-                  <span className="legend-color cash"></span>
-                  <span>Cash</span>
+
+                <div className="chart-legend">
+                  <div className="legend-item">
+                    <span className="legend-color equity"></span>
+                    <span>Equity</span>
+                  </div>
+                  <div className="legend-item">
+                    <span className="legend-color bond"></span>
+                    <span>Bonds</span>
+                  </div>
+                  <div className="legend-item">
+                    <span className="legend-color cash"></span>
+                    <span>Cash</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1622,7 +1672,7 @@ export default function App() {
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
                   data={timeline}
-                  margin={{ top: 10, right: 10, left: 10, bottom: 0 }}
+                  margin={{ top: 30, right: 10, left: 10, bottom: 0 }}
                   onMouseLeave={() => {
                     activeMonthRef.current = null;
                   }}
@@ -1642,7 +1692,7 @@ export default function App() {
                     width={60}
                   />
                   <Tooltip content={<CustomTooltip activeMonthRef={activeMonthRef} />} wrapperStyle={{ pointerEvents: 'none' }} />
-                  {alerts.map((alert, idx) => (
+                  {showEvents && alerts.map((alert, idx) => (
                     <ReferenceLine
                       key={idx}
                       x={currentAge + alert.month / 12}
@@ -1667,7 +1717,7 @@ export default function App() {
                       }}
                     />
                   ))}
-                  {monthsToTarget >= 0 && (
+                  {showEvents && monthsToTarget >= 0 && (
                     <ReferenceLine
                       x={currentAge + monthsToTarget / 12}
                       stroke="var(--accent-primary)"
@@ -1676,10 +1726,27 @@ export default function App() {
                         value: 'Target Equity Ratio Reached',
                         fill: 'var(--accent-primary)',
                         fontSize: 10,
-                        position: 'insideTopLeft'
+                        position: 'insideTopLeft',
+                        dy: 10
                       }}
                     />
                   )}
+                  {showMillionMarks && millionMarks.map((mark, idx) => (
+                    <ReferenceLine
+                      key={`mil-${idx}`}
+                      x={mark.age}
+                      stroke="rgba(16, 185, 129, 0.4)"
+                      strokeDasharray="3 3"
+                      label={{
+                        value: mark.value,
+                        fill: '#34d399',
+                        fontSize: 10,
+                        position: 'insideBottomLeft',
+                        dy: -10,
+                        dx: 5
+                      }}
+                    />
+                  ))}
                   <Area
                     type="monotone"
                     dataKey="cashBalance"
