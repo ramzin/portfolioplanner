@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine } from 'recharts';
-import { TrendingUp, Award, DollarSign, AlertTriangle, Plus, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { TrendingUp, Award, DollarSign, AlertTriangle, Plus, Trash2, ChevronDown, ChevronUp, Download } from 'lucide-react';
 import { usePercentageAllocation } from './hooks/usePercentageAllocation';
+import { generateMarkdownReport } from './utils/reportGenerator';
 import './App.css';
 
 interface LedgerEvent {
@@ -273,6 +274,7 @@ export default function App() {
   });
 
   const [logSearchQuery, setLogSearchQuery] = useState('');
+  const [exportFormatOption, setExportFormatOption] = useState<'FULL' | 'MILESTONES' | 'YEARLY'>('FULL');
   const [expandedMonths, setExpandedMonths] = useState<Record<number, boolean>>({});
   const activeMonthRef = useRef<number | null>(null);
 
@@ -919,6 +921,55 @@ export default function App() {
     setBondWithdrawalSchedule(bondWithdrawalSchedule.filter((s) => s.startMonth !== month));
   };
 
+  const handleExportForLLM = () => {
+    if (timeline.length === 0) return;
+
+    const markdown = generateMarkdownReport({
+      currentAge,
+      retirementAge,
+      initialNetWorth,
+      monthlySalary,
+      monthlyExpenses,
+      allocation: {
+        equity: allocation.equity,
+        bond: allocation.bond,
+        cash: allocation.cash,
+      },
+      equityYield,
+      bondYield,
+      cashYield,
+      bondQuarterlyWithdrawal,
+      dcaMonthlyAmount,
+      targetEquityRatio,
+      emergencyFund,
+      minimumBondAmount,
+      bondIncomeStrategy,
+      cashAllocationStrategy,
+      abgeltungsteuer,
+      sparerpauschbetrag,
+      basiszins,
+      dcaSchedule,
+      bondWithdrawalSchedule,
+      timeline,
+      alerts,
+      monthsToTarget,
+      millionMarks,
+      exportFormatOption,
+    });
+
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    
+    const optionStr = exportFormatOption.toLowerCase();
+    link.setAttribute('download', `portfolio_planner_strategy_report_${optionStr}.md`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   let targetStatusText = "Not Reached";
   let targetSubtext = "Equity ratio remains below target";
   if (monthsToTarget >= 0) {
@@ -932,22 +983,64 @@ export default function App() {
     <div className="app-container">
       {/* Header */}
       <header className="app-header">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
           <div>
             <h1 className="app-title">Wealth Accumulation & Asset Transition</h1>
           </div>
-          <div
-            style={{
-              padding: '6px 12px',
-              borderRadius: '20px',
-              fontSize: '12px',
-              fontWeight: 600,
-              background: backendStatus === 'CONNECTED' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-              color: backendStatus === 'CONNECTED' ? '#34d399' : '#f87171',
-              border: `1px solid ${backendStatus === 'CONNECTED' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
-            }}
-          >
-            {backendStatus === 'CONNECTED' ? 'Backend Engine Connected' : 'Offline Client Mode'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255, 255, 255, 0.03)', padding: '4px 8px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Export:</span>
+              <select
+                value={exportFormatOption}
+                onChange={(e) => setExportFormatOption(e.target.value as 'FULL' | 'MILESTONES' | 'YEARLY')}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-primary)',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  outline: 'none',
+                  cursor: 'pointer',
+                  paddingRight: '4px'
+                }}
+              >
+                <option value="FULL" style={{ background: '#18181b', color: '#fff' }}>Full Chronological Log</option>
+                <option value="MILESTONES" style={{ background: '#18181b', color: '#fff' }}>Milestones & Alerts Only</option>
+                <option value="YEARLY" style={{ background: '#18181b', color: '#fff' }}>Yearly Summary + Events</option>
+              </select>
+              <button
+                onClick={handleExportForLLM}
+                className="add-segment-btn"
+                style={{
+                  height: '28px',
+                  padding: '0 10px',
+                  fontSize: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  borderColor: 'rgba(255, 255, 255, 0.12)'
+                }}
+                title="Download strategy details and logs formatted for LLMs"
+              >
+                <Download size={14} />
+                <span>Export for LLM</span>
+              </button>
+            </div>
+
+            <div
+              style={{
+                padding: '6px 12px',
+                borderRadius: '20px',
+                fontSize: '12px',
+                fontWeight: 600,
+                background: backendStatus === 'CONNECTED' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                color: backendStatus === 'CONNECTED' ? '#34d399' : '#f87171',
+                border: `1px solid ${backendStatus === 'CONNECTED' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+              }}
+            >
+              {backendStatus === 'CONNECTED' ? 'Backend Engine Connected' : 'Offline Client Mode'}
+            </div>
           </div>
         </div>
       </header>
