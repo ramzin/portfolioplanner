@@ -76,7 +76,8 @@ class SimulationControllerTest {
                 jsonPath("$.bondQuarterlyWithdrawal") { value(15000.0) }
                 jsonPath("$.dcaMonthlyAmount") { value(6000.0) }
                 jsonPath("$.targetEquityRatioPercent") { value(80.0) }
-                jsonPath("$.postTargetStrategy") { value("ACCUMULATE_CASH") }
+                jsonPath("$.bondIncomeStrategy") { value("ACCUMULATE_CASH") }
+                jsonPath("$.cashAllocationStrategy") { value("ACCUMULATE_CASH") }
             }
     }
 }

@@ -193,8 +193,8 @@ class DefaultSimulationEngine : SimulationEngine {
                 }
                 taxPaidThisYear = taxPaidThisYear.add(couponTax)
 
-                // Determine requested withdrawal: schedule-aware, always zero post-target
-                val requestedWithdrawal = if (targetReached) {
+                // Determine requested withdrawal
+                val requestedWithdrawal = if (targetReached && request.bondIncomeStrategy == PostTargetStrategy.INVEST_BONDS) {
                     BigDecimal.ZERO
                 } else {
                     val schedule = request.bondWithdrawalSchedule
@@ -206,25 +206,55 @@ class DefaultSimulationEngine : SimulationEngine {
                     }
                 }
 
-                // Add coupon to bond (pre-target) or cash (post-target)
-                val isBondsAccumulation = targetReached && request.postTargetStrategy == PostTargetStrategy.INVEST_BONDS
-                if (isBondsAccumulation) {
-                    // Reinvested directly in bonds: coupon is never sent to cash, but gets reinvested in the bonds
-                    bond = bond.add(coupon)
-                    if (coupon.compareTo(BigDecimal.ZERO) > 0) {
-                        bondEvents.add(LedgerEvent(coupon, "Earned quarterly bond coupon (reinvested)"))
+                // Add coupon to bond (reinvested), cash (withdrawn), or equity (invested)
+                val couponToCash: BigDecimal
+                val couponToBonds: BigDecimal
+                val couponToEquity: BigDecimal
+
+                if (targetReached) {
+                    when (request.bondIncomeStrategy) {
+                        PostTargetStrategy.INVEST_BONDS -> {
+                            couponToCash = BigDecimal.ZERO
+                            couponToBonds = coupon
+                            couponToEquity = BigDecimal.ZERO
+                        }
+                        PostTargetStrategy.ACCUMULATE_CASH -> {
+                            couponToCash = coupon
+                            couponToBonds = BigDecimal.ZERO
+                            couponToEquity = BigDecimal.ZERO
+                        }
+                        PostTargetStrategy.INVEST_EQUITY -> {
+                            couponToCash = BigDecimal.ZERO
+                            couponToBonds = BigDecimal.ZERO
+                            couponToEquity = coupon
+                        }
                     }
                 } else {
-                    // Coupon is added and was subtracted in the bonds section:
-                    if (coupon.compareTo(BigDecimal.ZERO) > 0) {
-                        bondEvents.add(LedgerEvent(coupon, "Earned quarterly bond coupon"))
-                        bondEvents.add(LedgerEvent(coupon.negate(), "Coupon payout to Cash"))
-                    }
-                    // In the cash section the user can see that the coupon was added:
-                    cash = cash.add(coupon)
-                    if (coupon.compareTo(BigDecimal.ZERO) > 0) {
-                        cashEvents.add(LedgerEvent(coupon, "Received quarterly bond coupon"))
-                    }
+                    couponToCash = coupon.min(requestedWithdrawal)
+                    couponToBonds = coupon.subtract(couponToCash)
+                    couponToEquity = BigDecimal.ZERO
+                }
+
+                if (couponToBonds.compareTo(BigDecimal.ZERO) > 0) {
+                    bond = bond.add(couponToBonds)
+                    bondEvents.add(LedgerEvent(couponToBonds, "Earned quarterly bond coupon (reinvested)"))
+                }
+
+                if (couponToCash.compareTo(BigDecimal.ZERO) > 0) {
+                    bondEvents.add(LedgerEvent(couponToCash, "Earned quarterly bond coupon"))
+                    bondEvents.add(LedgerEvent(couponToCash.negate(), "Coupon payout to Cash"))
+
+                    cash = cash.add(couponToCash)
+                    cashEvents.add(LedgerEvent(couponToCash, "Received quarterly bond coupon"))
+                }
+
+                if (couponToEquity.compareTo(BigDecimal.ZERO) > 0) {
+                    bondEvents.add(LedgerEvent(couponToEquity, "Earned quarterly bond coupon"))
+                    bondEvents.add(LedgerEvent(couponToEquity.negate(), "Coupon payout to Equity"))
+
+                    equity = equity.add(couponToEquity)
+                    eqEvents.add(LedgerEvent(couponToEquity, "Received quarterly bond coupon"))
+                    yearlyDcaInvested = yearlyDcaInvested.add(couponToEquity)
                 }
 
                 // Coupon tax is always paid from the cash pile
@@ -234,7 +264,7 @@ class DefaultSimulationEngine : SimulationEngine {
                 }
 
                 // Determine requested principal withdrawal from bonds:
-                // Since the coupon is paid to Cash, we only need to withdraw principal if the requested withdrawal exceeds the coupon.
+                // Since the coupon is paid to Cash or Equity, we only need to withdraw principal if the requested withdrawal exceeds the coupon.
                 val principalWithdrawalNeeded = (requestedWithdrawal.subtract(coupon)).max(BigDecimal.ZERO)
 
                 // Apply minimum bond floor — actual withdrawal may be less than requested
@@ -251,11 +281,22 @@ class DefaultSimulationEngine : SimulationEngine {
                     mEvents.add("⚠ Minimum Bond Floor: Requested quarterly principal withdrawal of ${formatMoney(principalWithdrawalNeeded)} restricted to ${formatMoney(actualWithdrawal)} to maintain the minimum bond balance of ${formatMoney(request.minimumBondAmount)}.")
                 }
 
-                bondQuarterlyCashInflow = actualWithdrawal
+                bondQuarterlyCashInflow = if (targetReached && request.bondIncomeStrategy == PostTargetStrategy.INVEST_EQUITY) {
+                    BigDecimal.ZERO
+                } else {
+                    actualWithdrawal
+                }
+
                 if (actualWithdrawal.compareTo(BigDecimal.ZERO) > 0) {
                     bond = bond.subtract(actualWithdrawal)
                     bondEvents.add(LedgerEvent(actualWithdrawal.negate(), "Quarterly bond withdrawal"))
-                    cashEvents.add(LedgerEvent(actualWithdrawal, "Received bond quarterly withdrawal"))
+                    if (targetReached && request.bondIncomeStrategy == PostTargetStrategy.INVEST_EQUITY) {
+                        equity = equity.add(actualWithdrawal)
+                        eqEvents.add(LedgerEvent(actualWithdrawal, "Received bond quarterly withdrawal"))
+                        yearlyDcaInvested = yearlyDcaInvested.add(actualWithdrawal)
+                    } else {
+                        cashEvents.add(LedgerEvent(actualWithdrawal, "Received bond quarterly withdrawal"))
+                    }
                 }
             }
 
@@ -290,8 +331,8 @@ class DefaultSimulationEngine : SimulationEngine {
                 val availableCash = (cash.subtract(request.emergencyFund)).max(BigDecimal.ZERO)
                 if (targetReached) {
                     // Post-target: DCA transition from Cash based on strategy, no bond liquidation
-                    if (request.postTargetStrategy == PostTargetStrategy.INVEST_EQUITY || request.postTargetStrategy == PostTargetStrategy.INVEST_BONDS) {
-                        val destination = request.postTargetStrategy
+                    if (request.cashAllocationStrategy == PostTargetStrategy.INVEST_EQUITY || request.cashAllocationStrategy == PostTargetStrategy.INVEST_BONDS) {
+                        val destination = request.cashAllocationStrategy
                         if (availableCash.compareTo(dca) >= 0) {
                             cash = cash.subtract(dca)
                             actualDca = dca
@@ -411,7 +452,12 @@ class DefaultSimulationEngine : SimulationEngine {
             if (!targetReached && currentRatio.compareTo(request.targetEquityRatioPercent) >= 0) {
                 targetReached = true
                 monthsToTarget = m
-                mEvents.add("Target Equity Ratio Reached: Equity ratio is ${currentRatio.setScale(2, RoundingMode.HALF_UP)}% (Target: ${request.targetEquityRatioPercent.setScale(2, RoundingMode.HALF_UP)}%). Programmatic bond withdrawals stopped.")
+                val strategyMsg = when (request.bondIncomeStrategy) {
+                    PostTargetStrategy.INVEST_BONDS -> "Programmatic bond withdrawals stopped."
+                    PostTargetStrategy.INVEST_EQUITY -> "Programmatic bond withdrawals continue (invested in Equity)."
+                    PostTargetStrategy.ACCUMULATE_CASH -> "Programmatic bond withdrawals continue (accumulated in Cash)."
+                }
+                mEvents.add("Target Equity Ratio Reached: Equity ratio is ${currentRatio.setScale(2, RoundingMode.HALF_UP)}% (Target: ${request.targetEquityRatioPercent.setScale(2, RoundingMode.HALF_UP)}%). $strategyMsg")
             }
 
             timeline.add(createTimelinePoint(m, date, age, equity, bond, cash, taxPaidThisYear, eqEvents, bondEvents, cashEvents, mEvents))

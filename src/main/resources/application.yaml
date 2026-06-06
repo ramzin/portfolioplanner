@@ -31,6 +31,7 @@ simulation:
     bond-quarterly-withdrawal: 15000.00
     dca-monthly-amount: 6000.00
     target-equity-ratio-percent: 80.0
-    post-target-strategy: ACCUMULATE_CASH
+    bond-income-strategy: ACCUMULATE_CASH
+    cash-allocation-strategy: ACCUMULATE_CASH
     minimum-bond-amount: 100000.00
     emergency-fund: 50000.00

@@ -26,9 +26,13 @@ _Avoid_: Transitioning, asset migration
 The desired target percentage of Equity compared to the total portfolio balance (Bonds and Cash).
 _Avoid_: Target allocation, target ratio
 
-**Post-Target Allocation Strategy**:
-The user-selected behavior for dividing monthly savings once the Target Equity Ratio has been reached.
-_Avoid_: Reinvestment policy, post-target rule
+**Bond Income Strategy**:
+The user-selected behavior for routing coupon yields and scheduled principal withdrawals from Bonds once the Target Equity Ratio has been reached.
+_Avoid_: Reinvestment policy, bond post-target strategy
+
+**Cash Allocation Strategy**:
+The user-selected behavior for routing the cash pile (monthly savings, cash interest, and cash above the emergency fund) via DCA once the Target Equity Ratio has been reached.
+_Avoid_: Savings post-target strategy, cash rule
 
 **DCA Step-down Event**:
 The simulation inflection point where liquid Cash is depleted, requiring bond liquidations to fund the scheduled DCA transfer.

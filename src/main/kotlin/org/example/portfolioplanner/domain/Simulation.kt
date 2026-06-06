@@ -50,7 +50,8 @@ data class SimulationRequest(
     val dcaMonthlyAmount: BigDecimal = BigDecimal("0.00"),
     val targetEquityRatioPercent: BigDecimal = BigDecimal("100.00"),
     val dcaSchedule: List<DcaScheduleSegment>? = null,
-    val postTargetStrategy: PostTargetStrategy = PostTargetStrategy.ACCUMULATE_CASH,
+    val bondIncomeStrategy: PostTargetStrategy = PostTargetStrategy.ACCUMULATE_CASH,
+    val cashAllocationStrategy: PostTargetStrategy = PostTargetStrategy.ACCUMULATE_CASH,
     val minimumBondAmount: BigDecimal = BigDecimal.ZERO,
     val bondWithdrawalSchedule: List<DcaScheduleSegment>? = null,
     val emergencyFund: BigDecimal = BigDecimal.ZERO

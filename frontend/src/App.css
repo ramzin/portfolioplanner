@@ -539,3 +539,20 @@
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
 }
+
+.log-item-highlight {
+  animation: pulse-highlight 1.5s ease-out;
+}
+
+@keyframes pulse-highlight {
+  0% {
+    background: rgba(139, 92, 246, 0.2);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 12px rgba(139, 92, 246, 0.4);
+  }
+  100% {
+    background: rgba(255, 255, 255, 0.01);
+    border-color: rgba(255, 255, 255, 0.04);
+    box-shadow: none;
+  }
+}

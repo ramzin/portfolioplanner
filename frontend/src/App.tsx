@@ -187,11 +187,16 @@ interface TooltipPayloadItem {
 const CustomTooltip = ({
   active,
   payload,
+  activeMonthRef,
 }: {
   active?: boolean;
   payload?: TooltipPayloadItem[];
+  activeMonthRef?: React.MutableRefObject<number | null>;
 }) => {
   if (active && payload && payload.length) {
+    if (activeMonthRef) {
+      activeMonthRef.current = payload[0].payload.month;
+    }
     const data = payload[0].payload;
     const formattedDate = new Date(data.date).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -199,7 +204,7 @@ const CustomTooltip = ({
     });
 
     return (
-      <div className="custom-tooltip">
+      <div className="custom-tooltip" style={{ pointerEvents: 'none' }}>
         <p className="tooltip-title">{formattedDate} (Month {data.month})</p>
         <p className="tooltip-row age">Age: {data.age.toFixed(1)}</p>
         <p className="tooltip-row equity">
@@ -245,7 +250,8 @@ export default function App() {
   // DCA & Transition settings
   const [dcaMonthlyAmount, setDcaMonthlyAmount] = useState(6000);
   const [targetEquityRatio, setTargetEquityRatio] = useState(80);
-  const [postTargetStrategy, setPostTargetStrategy] = useState<'ACCUMULATE_CASH' | 'INVEST_EQUITY' | 'INVEST_BONDS'>('ACCUMULATE_CASH');
+  const [bondIncomeStrategy, setBondIncomeStrategy] = useState<'ACCUMULATE_CASH' | 'INVEST_EQUITY' | 'INVEST_BONDS'>('ACCUMULATE_CASH');
+  const [cashAllocationStrategy, setCashAllocationStrategy] = useState<'ACCUMULATE_CASH' | 'INVEST_EQUITY' | 'INVEST_BONDS'>('ACCUMULATE_CASH');
   const [emergencyFund, setEmergencyFund] = useState(50000);
   const [minimumBondAmount, setMinimumBondAmount] = useState(100000);
 
@@ -268,6 +274,7 @@ export default function App() {
 
   const [logSearchQuery, setLogSearchQuery] = useState('');
   const [expandedMonths, setExpandedMonths] = useState<Record<number, boolean>>({});
+  const activeMonthRef = useRef<number | null>(null);
 
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [monthsToTarget, setMonthsToTarget] = useState<number>(-1);
@@ -304,7 +311,8 @@ export default function App() {
           setBondQuarterlyWithdrawal(data.bondQuarterlyWithdrawal);
           setDcaMonthlyAmount(data.dcaMonthlyAmount);
           setTargetEquityRatio(data.targetEquityRatioPercent);
-          setPostTargetStrategy(data.postTargetStrategy);
+          setBondIncomeStrategy(data.bondIncomeStrategy);
+          setCashAllocationStrategy(data.cashAllocationStrategy);
           if (data.minimumBondAmount !== undefined) setMinimumBondAmount(Number(data.minimumBondAmount));
           if (data.emergencyFund !== undefined) setEmergencyFund(Math.max(1000, Number(data.emergencyFund)));
           setBackendStatus('CONNECTED');
@@ -339,7 +347,8 @@ export default function App() {
       dcaMonthlyAmount: dcaMonthlyAmount,
       targetEquityRatioPercent: targetEquityRatio,
       dcaSchedule: dcaSchedule.length > 0 ? dcaSchedule : undefined,
-      postTargetStrategy: postTargetStrategy,
+      bondIncomeStrategy: bondIncomeStrategy,
+      cashAllocationStrategy: cashAllocationStrategy,
       minimumBondAmount: minimumBondAmount,
       bondWithdrawalSchedule: bondWithdrawalSchedule.length > 0 ? bondWithdrawalSchedule : undefined,
       emergencyFund: emergencyFund,
@@ -561,34 +570,60 @@ export default function App() {
             }
             taxPaidThisYear += couponTax;
 
-            // Schedule-aware requested withdrawal (zero post-target)
-            let requestedWithdrawal = targetReached ? 0 : bondQuarterlyWithdrawal;
-            if (!targetReached && bondWithdrawalSchedule.length > 0) {
+            // Schedule-aware requested withdrawal
+            let requestedWithdrawal = (targetReached && bondIncomeStrategy === 'INVEST_BONDS') ? 0 : bondQuarterlyWithdrawal;
+            if (bondWithdrawalSchedule.length > 0) {
               const active = bondWithdrawalSchedule
                 .filter((s) => s.startMonth <= nextM)
                 .reduce((max, s) => (max.startMonth === -1 || s.startMonth > max.startMonth ? s : max), { startMonth: -1, dcaAmount: bondQuarterlyWithdrawal });
-              if (active.startMonth >= 0) requestedWithdrawal = active.dcaAmount;
+              if (active.startMonth >= 0) {
+                requestedWithdrawal = (targetReached && bondIncomeStrategy === 'INVEST_BONDS') ? 0 : active.dcaAmount;
+              }
             }
 
-            // Add coupon to bond (pre-target) or cash (post-target)
-            const isBondsAccumulation = targetReached && postTargetStrategy === 'INVEST_BONDS';
-            if (isBondsAccumulation) {
-              // Reinvested directly in bonds: coupon is never sent to cash, but gets reinvested in the bonds
-              bond += coupon;
-              if (coupon > 0) {
-                bondEvents.push({ amount: coupon, type: `Earned quarterly bond coupon (reinvested)` });
+            // Add coupon to bond, cash, or equity
+            let couponToCash = 0;
+            let couponToBonds = 0;
+            let couponToEquity = 0;
+
+            if (targetReached) {
+              if (bondIncomeStrategy === 'INVEST_BONDS') {
+                couponToCash = 0;
+                couponToBonds = coupon;
+                couponToEquity = 0;
+              } else if (bondIncomeStrategy === 'ACCUMULATE_CASH') {
+                couponToCash = coupon;
+                couponToBonds = 0;
+                couponToEquity = 0;
+              } else {
+                couponToCash = 0;
+                couponToBonds = 0;
+                couponToEquity = coupon;
               }
             } else {
-              // Coupon is added and was subtracted in the bonds section:
-              if (coupon > 0) {
-                bondEvents.push({ amount: coupon, type: `Earned quarterly bond coupon` });
-                bondEvents.push({ amount: -coupon, type: `Coupon payout to Cash` });
-              }
-              // In the cash section the user can see that the coupon was added:
-              cash += coupon;
-              if (coupon > 0) {
-                cashEvents.push({ amount: coupon, type: `Received quarterly bond coupon` });
-              }
+              couponToCash = Math.min(coupon, requestedWithdrawal);
+              couponToBonds = coupon - couponToCash;
+              couponToEquity = 0;
+            }
+
+            if (couponToBonds > 0) {
+              bond += couponToBonds;
+              bondEvents.push({ amount: couponToBonds, type: `Earned quarterly bond coupon (reinvested)` });
+            }
+
+            if (couponToCash > 0) {
+              bondEvents.push({ amount: couponToCash, type: `Earned quarterly bond coupon` });
+              bondEvents.push({ amount: -couponToCash, type: `Coupon payout to Cash` });
+              cash += couponToCash;
+              cashEvents.push({ amount: couponToCash, type: `Received quarterly bond coupon` });
+            }
+
+            if (couponToEquity > 0) {
+              bondEvents.push({ amount: couponToEquity, type: `Earned quarterly bond coupon` });
+              bondEvents.push({ amount: -couponToEquity, type: `Coupon payout to Equity` });
+              equity += couponToEquity;
+              eqEvents.push({ amount: couponToEquity, type: `Received quarterly bond coupon` });
+              yearlyDcaInvested += couponToEquity;
             }
 
             // Coupon tax is always paid from the cash pile
@@ -611,11 +646,18 @@ export default function App() {
               tempEvents.push(`⚠ Minimum Bond Floor: Requested quarterly principal withdrawal of ${formatMoney(principalWithdrawalNeeded)} restricted to ${formatMoney(w)} to maintain the minimum bond balance of ${formatMoney(minimumBondAmount)}.`);
             }
 
+            bondQuarterlyCashInflow = (targetReached && bondIncomeStrategy === 'INVEST_EQUITY') ? 0 : w;
+
             if (w > 0) {
               bond -= w;
-              bondQuarterlyCashInflow = w;
               bondEvents.push({ amount: -w, type: `Quarterly bond withdrawal` });
-              cashEvents.push({ amount: w, type: `Received bond quarterly withdrawal` });
+              if (targetReached && bondIncomeStrategy === 'INVEST_EQUITY') {
+                equity += w;
+                eqEvents.push({ amount: w, type: `Received bond quarterly withdrawal` });
+                yearlyDcaInvested += w;
+              } else {
+                cashEvents.push({ amount: w, type: `Received bond quarterly withdrawal` });
+              }
             }
           }
 
@@ -643,8 +685,8 @@ export default function App() {
             const availableCash = Math.max(0, cash - emergencyFund);
             if (targetReached) {
               // Post-target: DCA transition based on strategy, no bond liquidation
-              if (postTargetStrategy === 'INVEST_EQUITY' || postTargetStrategy === 'INVEST_BONDS') {
-                const destination = postTargetStrategy;
+              if (cashAllocationStrategy === 'INVEST_EQUITY' || cashAllocationStrategy === 'INVEST_BONDS') {
+                const destination = cashAllocationStrategy;
                 if (availableCash >= dca) {
                   cash -= dca;
                   actualDca = dca;
@@ -776,7 +818,10 @@ export default function App() {
           if (!targetReached && nextRatio >= targetEquityRatio) {
             targetReached = true;
             monthsToTargetVal = nextM;
-            tempEvents.push(`Target Equity Ratio Reached: Equity ratio is ${nextRatio.toFixed(2)}% (Target: ${targetEquityRatio}%). Programmatic bond withdrawals stopped.`);
+            const strategyMsg = bondIncomeStrategy === 'INVEST_BONDS' ? "Programmatic bond withdrawals stopped."
+              : bondIncomeStrategy === 'INVEST_EQUITY' ? "Programmatic bond withdrawals continue (invested in Equity)."
+              : "Programmatic bond withdrawals continue (accumulated in Cash).";
+            tempEvents.push(`Target Equity Ratio Reached: Equity ratio is ${nextRatio.toFixed(2)}% (Target: ${targetEquityRatio}%). ${strategyMsg}`);
           }
 
           nextEqEvents = eqEvents;
@@ -813,7 +858,8 @@ export default function App() {
     dcaMonthlyAmount,
     targetEquityRatio,
     dcaSchedule,
-    postTargetStrategy,
+    bondIncomeStrategy,
+    cashAllocationStrategy,
     minimumBondAmount,
     bondWithdrawalSchedule,
     emergencyFund,
@@ -1069,26 +1115,62 @@ export default function App() {
 
               <div className="input-field-wrapper" style={{ marginTop: '8px' }}>
                 <div className="input-label-row">
-                  <span className="input-label">Post-Target Strategy</span>
+                  <span className="input-label">Bond Income Strategy</span>
                 </div>
                 <select
-                  id="post-target-strategy-select"
-                  value={postTargetStrategy}
-                  onChange={(e) => setPostTargetStrategy(e.target.value as typeof postTargetStrategy)}
+                  id="bond-income-strategy-select"
+                  value={bondIncomeStrategy}
+                  onChange={(e) => setBondIncomeStrategy(e.target.value as typeof bondIncomeStrategy)}
                   className="post-target-select"
                 >
-                  <option value="ACCUMULATE_CASH">Accumulate Cash (savings build up in cash)</option>
-                  <option value="INVEST_EQUITY">Invest Equity (invest excess cash in equity)</option>
-                  <option value="INVEST_BONDS">Invest Bonds (invest excess cash in bonds)</option>
+                  <option value="ACCUMULATE_CASH">Accumulate Cash (coupons & withdrawals flow to cash)</option>
+                  <option value="INVEST_EQUITY">Invest Equity (coupons & withdrawals flow to equity)</option>
+                  <option value="INVEST_BONDS">Reinvest in Bonds (coupons reinvested, withdrawals stopped)</option>
                 </select>
-                {postTargetStrategy === 'INVEST_EQUITY' && (
+                {bondIncomeStrategy === 'INVEST_EQUITY' && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Coupons and programmatic bond withdrawals are automatically invested in <strong>equity</strong>.
+                  </p>
+                )}
+                {bondIncomeStrategy === 'INVEST_BONDS' && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Coupons are reinvested in <strong>bonds</strong>. Programmatic withdrawals are paused.
+                  </p>
+                )}
+                {bondIncomeStrategy === 'ACCUMULATE_CASH' && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Coupons and programmatic withdrawals flow into the <strong>cash</strong> pile.
+                  </p>
+                )}
+              </div>
+
+              <div className="input-field-wrapper" style={{ marginTop: '8px' }}>
+                <div className="input-label-row">
+                  <span className="input-label">Cash Allocation Strategy</span>
+                </div>
+                <select
+                  id="cash-allocation-strategy-select"
+                  value={cashAllocationStrategy}
+                  onChange={(e) => setCashAllocationStrategy(e.target.value as typeof cashAllocationStrategy)}
+                  className="post-target-select"
+                >
+                  <option value="ACCUMULATE_CASH">Accumulate Cash (savings build up in cash, DCA paused)</option>
+                  <option value="INVEST_EQUITY">Invest Equity (savings/cash above emergency floor to equity via DCA)</option>
+                  <option value="INVEST_BONDS">Invest Bonds (savings/cash above emergency floor to bonds via DCA)</option>
+                </select>
+                {cashAllocationStrategy === 'INVEST_EQUITY' && (
                   <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
                     Excess cash above the emergency fund floor is automatically invested in <strong>equity</strong>.
                   </p>
                 )}
-                {postTargetStrategy === 'INVEST_BONDS' && (
+                {cashAllocationStrategy === 'INVEST_BONDS' && (
                   <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
                     Excess cash above the emergency fund floor is automatically invested in <strong>bonds</strong>.
+                  </p>
+                )}
+                {cashAllocationStrategy === 'ACCUMULATE_CASH' && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Savings and cash yields accumulate directly in <strong>cash</strong>. Programmatic DCA is paused.
                   </p>
                 )}
               </div>
@@ -1511,9 +1593,40 @@ export default function App() {
               </div>
             </div>
 
-            <div className="chart-container">
+            <div 
+              className="chart-container"
+              style={{ cursor: 'pointer' }}
+              onClickCapture={() => {
+                const clickedMonth = activeMonthRef.current;
+                if (clickedMonth !== null && clickedMonth !== undefined) {
+                  setExpandedMonths((prev) => ({ ...prev, [clickedMonth]: true }));
+                  setTimeout(() => {
+                    const el = document.getElementById(`log-month-${clickedMonth}`);
+                    const container = document.querySelector('.log-scroll-container');
+                    if (el && container) {
+                      const containerRect = container.getBoundingClientRect();
+                      const elRect = el.getBoundingClientRect();
+                      container.scrollBy({
+                        top: elRect.top - containerRect.top - containerRect.height / 2 + elRect.height / 2,
+                        behavior: 'smooth'
+                      });
+                      el.classList.add('log-item-highlight');
+                      setTimeout(() => {
+                        el.classList.remove('log-item-highlight');
+                      }, 1500);
+                    }
+                  }, 100);
+                }
+              }}
+            >
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timeline} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                <AreaChart
+                  data={timeline}
+                  margin={{ top: 10, right: 10, left: 10, bottom: 0 }}
+                  onMouseLeave={() => {
+                    activeMonthRef.current = null;
+                  }}
+                >
                   <XAxis
                     dataKey="age"
                     tickLine={false}
@@ -1528,7 +1641,7 @@ export default function App() {
                     style={{ fontSize: '11px', fill: 'var(--text-muted)' }}
                     width={60}
                   />
-                  <Tooltip content={<CustomTooltip />} />
+                  <Tooltip content={<CustomTooltip activeMonthRef={activeMonthRef} />} wrapperStyle={{ pointerEvents: 'none' }} />
                   {alerts.map((alert, idx) => (
                     <ReferenceLine
                       key={idx}
@@ -1711,6 +1824,7 @@ export default function App() {
                   return (
                     <div
                       key={pt.month}
+                      id={`log-month-${pt.month}`}
                       className="log-item-card"
                       onClick={() => setExpandedMonths(prev => ({ ...prev, [pt.month]: !prev[pt.month] }))}
                     >
