@@ -23,13 +23,13 @@ simulation:
       bond-percentage: 40.0
       cash-percentage: 21.0
       equity-yield-percent: 7.0
-      bond-yield-percent: 2.0
-      cash-yield-percent: 2.5
+      bond-yield-percent: 2.5
+      cash-yield-percent: 3
     abgeltungsteuer-percent: 26.375
     sparerpauschbetrag: 1000.00
     basiszins-percent: 2.29
     bond-quarterly-withdrawal: 15000.00
-    dca-monthly-amount: 6000.00
+    dca-monthly-amount: 4500.00
     target-equity-ratio-percent: 80.0
     bond-income-strategy: ACCUMULATE_CASH
     cash-allocation-strategy: ACCUMULATE_CASH
